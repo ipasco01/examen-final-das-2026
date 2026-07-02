@@ -1,6 +1,7 @@
 Isabel Pasco
 ![alt text](image-1.png)
 ![alt text](image.png)
+![alt text](image-2.png)
 ## Contexto
 El sistema de Tutorías Universitarias necesita incorporar un flujo de pagos integrado con proveedores externos (Visa, Mastercard) a través de un nuevo servicio `ms-pagos`. El flujo actual valida usuarios, bloquea agenda, registra la tutoría y notifica. Las restricciones principales radican en la naturaleza inestable de los proveedores de pago: pueden ser lentos, enviar callbacks tardíos, duplicar respuestas o fallar. La tutoría solo debe confirmarse si existe una intención de pago exitosa y trazable.
 
