@@ -24,12 +24,16 @@
         .event-step { font-size: 1.2em; font-weight: bold; color: var(--header-color); margin-right: 10px; }
         .event-message { display: block; }
         .event-cid { font-size: 0.8em; color: #888; margin-top: 5px; display: block; }
+        .event-idempotency { font-size: 0.8em; color: #6495ed; margin-top: 2px; display: block; }
         .error { background-color: rgba(244, 71, 71, 0.2); border-left-color: #f44747 !important; color: #f44747; }
+        .event-bubble.filtered-out { display: none; }
+        #idempotency-filter { background: #2d2d2d; color: var(--text-color); border: 1px solid #666; padding: 8px 10px; border-radius: 4px; font-family: monospace; width: 260px; }
     </style>
 </head>
 <body>
     <header>
         <h1>[ Trazabilidad de la Saga en Vivo ]</h1>
+        <input type="text" id="idempotency-filter" placeholder="Filtrar por Idempotency-Key...">
         <button id="clear-btn">Limpiar Todo</button>
     </header>
 
@@ -99,8 +103,33 @@
             bubble.appendChild(content);
             bubble.appendChild(cid);
 
+            if (evento.idempotencyKey) {
+                bubble.dataset.idempotencyKey = evento.idempotencyKey;
+                const idempotency = document.createElement('span');
+                idempotency.className = 'event-idempotency';
+                idempotency.textContent = `Idempotency-Key: ${evento.idempotencyKey}`;
+                bubble.appendChild(idempotency);
+            }
+
             lane.appendChild(bubble);
             stepCounter++;
+            applyIdempotencyFilter(bubble);
+        });
+
+        const idempotencyFilterInput = document.getElementById('idempotency-filter');
+
+        function applyIdempotencyFilter(bubble) {
+            const filterValue = idempotencyFilterInput.value.trim();
+            if (!filterValue) {
+                bubble.classList.remove('filtered-out');
+                return;
+            }
+            const matches = bubble.dataset.idempotencyKey === filterValue;
+            bubble.classList.toggle('filtered-out', !matches);
+        }
+
+        idempotencyFilterInput.addEventListener('input', () => {
+            document.querySelectorAll('.event-bubble').forEach(applyIdempotencyFilter);
         });
 
         document.getElementById('clear-btn').addEventListener('click', () => {
@@ -113,6 +142,7 @@
             stepCounter = 1;
             transactionColors.clear();
             nextColorIndex = 0;
+            idempotencyFilterInput.value = '';
         });
     </script>
 </body>

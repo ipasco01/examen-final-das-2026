@@ -24,7 +24,8 @@ const solicitarTutoria = async (payload, token, correlationId) => {
     const response = await axios.post(url, payload, {
         headers: {
             'Authorization': `Bearer ${token}`, // <-- Header de seguridad
-            'X-Correlation-ID': correlationId
+            'X-Correlation-ID': correlationId,
+            'Idempotency-Key': correlationId // El endpoint exige esta clave; reutilizamos el CID único por solicitud.
         }
     });
     return response.data;

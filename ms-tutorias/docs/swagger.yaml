@@ -15,12 +15,13 @@ paths:
       tags:
         - Tutorías
       summary: Solicita una tutoría
-      description: Requiere JWT Bearer. Solo usuarios con rol `student` pueden solicitar tutorías; el `idEstudiante` efectivo se toma del claim `sub` del token y no del cuerpo.
+      description: Requiere JWT Bearer. Solo usuarios con rol `student` pueden solicitar tutorías; el `idEstudiante` efectivo se toma del claim `sub` del token y no del cuerpo. Requiere el header `Idempotency-Key`; si ya existe una tutoría con esa clave, se retorna esa tutoría sin reejecutar la Saga (no se reenvía la notificación ni se vuelve a bloquear agenda).
       operationId: postTutoria
       security:
         - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -41,6 +42,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Tutoria'
+        '400':
+          description: Falta el header `Idempotency-Key`, obligatorio para esta operación.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Token ausente, mal formado, inválido o expirado.
           content:
@@ -66,7 +73,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: '`ms-usuarios` no disponible temporalmente por timeout, red o Circuit Breaker abierto.'
+          description: '`ms-usuarios` o `ms-agenda` no disponible temporalmente por timeout, red o Circuit Breaker abierto.'
           content:
             application/json:
               schema:
@@ -91,6 +98,13 @@ components:
       schema:
         type: string
       description: Identificador de correlación propagado a usuarios, agenda y eventos de tracking.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Clave de idempotencia obligatoria. Si ya existe una tutoría creada con la misma clave, se retorna esa tutoría directamente sin reejecutar la Saga.
   schemas:
     SolicitudTutoriaRequest:
       type: object

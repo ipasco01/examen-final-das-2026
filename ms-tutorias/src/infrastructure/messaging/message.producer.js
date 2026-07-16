@@ -35,8 +35,13 @@ const connect = async () => {
 // connect(); // Removed auto-connect to allow better control and testing
 
 // Función para publicar en una COLA (para notificaciones)
+// Retorna true/false para que callers como el poller del outbox (D2) puedan distinguir éxito de
+// fallo y decidir si reintentar -- antes no retornaba nada útil en ningún camino.
 const publishToQueue = async (queueName, messagePayload) => {
-    if (!channel) { return; }
+    if (!channel) {
+        console.warn(`[MS_Tutorias] No se pudo publicar en '${queueName}': canal RabbitMQ no disponible.`);
+        return false;
+    }
     try {
         const queueOptions = queueName === NOTIFICACIONES_QUEUE
             ? {
@@ -50,8 +55,10 @@ const publishToQueue = async (queueName, messagePayload) => {
         const messageBuffer = Buffer.from(JSON.stringify(messagePayload));
         channel.sendToQueue(queueName, messageBuffer, { persistent: true });
         console.log(`[MS_Tutorias] Mensaje publicado en la cola '${queueName}'`);
+        return true;
     } catch (error) {
         console.error(`[MS_Tutorias] Error al publicar en cola:`, error.message);
+        return false;
     }
 };
 
