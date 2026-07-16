@@ -103,7 +103,7 @@ Eventos esperados por caso:
 
 | Caso | Eventos esperados | Resultado aceptable |
 | --- | --- | --- |
-| Happy path | `Validando usuarios`, `Agenda verificada`, `Bloqueo de agenda exitoso`, `Evento de notificación publicado`, `Actualización a CONFIRMADA exitosa`, email procesado. | Todos los eventos relevantes comparten el mismo `cid` y no aparecen eventos `ERROR`. |
+| Happy path | `Validando usuarios`, `Agenda verificada`, `Bloqueo de agenda exitoso`, `Confirmando tutoría y encolando notificación (outbox)`, `Actualización a CONFIRMADA exitosa`, email procesado. | Todos los eventos relevantes comparten el mismo `cid` y no aparecen eventos `ERROR`; la publicación real a `notificaciones_email_queue` la hace el poller del outbox en segundo plano, en segundos, no como parte síncrona del request. |
 | `409` | Verificación de disponibilidad o intento de bloqueo, evento de error controlado. | La solicitud falla sin crear doble bloqueo. |
 | DLQ | Error de procesamiento de email en `MS_Notificaciones`. | El mensaje inválido no queda reintentándose en la cola principal. |
 | Circuit Breaker/Toxiproxy | `Circuit Breaker ABIERTO para ms-usuarios`, proceso fallido en `MS_Tutorias`. | Se observa falla rápida y respuesta `503`. |
@@ -226,7 +226,7 @@ Completar una fila por cada caso ejecutado.
 ## Riesgos y brechas
 
 - **Trazas distribuidas:** no se observa OpenTelemetry, Jaeger, Tempo ni Zipkin; `X-Correlation-ID` no reemplaza trazas con spans.
-- **Alertas:** no se observan reglas de alerta Prometheus/Alertmanager ni notificaciones operativas.
+- **Alertas:** existe una regla de alerta evaluada por Prometheus (`alert_rules.yml`, `CompensacionAgendaFallida`, dispara si `compensacion_fallida_total` incrementa en los últimos 5 minutos) visible en `/alerts` de Prometheus. **No hay Alertmanager** en este entorno, así que la alerta no se enruta a ningún canal de notificación (email/Slack/etc.) — solo queda visible en la UI de Prometheus.
 - **SLOs:** no hay objetivos formales de disponibilidad, latencia, tasa de error ni ventanas de medición.
 - **Retención:** no se documenta retención de logs, métricas, eventos ni mensajes de DLQ.
 - **Logs centralizados:** los logs dependen de salida de servicios; no se observa agregación centralizada ni búsqueda histórica.
@@ -234,7 +234,7 @@ Completar una fila por cada caso ejecutado.
 - **Contratos de eventos:** tracking y notificaciones no tienen schema formal ni versionado.
 - **Garantías de publicación:** los productores RabbitMQ no documentan publisher confirms; un canal no disponible puede dejar eventos sin publicar.
 - **Operación de DLQ:** existe aislamiento, pero no hay procedimiento formal de replay, descarte, ownership ni auditoría.
-- **Compensación pendiente:** si falla la compensación de agenda, no se observa cola persistente de reintentos ni alerta automática.
+- **Resuelto (parcial):** si falla la compensación de agenda, la tabla `compensaciones_pendientes` + el worker `compensacion.worker.js` reintentan en segundo plano, y la métrica `compensacion_fallida_total` + la regla `CompensacionAgendaFallida` dan alerta automática (visible en Prometheus, sin Alertmanager que la enrute a un canal).
 - **Seguridad observacional:** el `cid` no autentica ni autoriza; solo correlaciona evidencia.
 
 ## Próximo paso recomendado

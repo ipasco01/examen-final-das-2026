@@ -7,6 +7,8 @@ const errorHandler = require('./api/middlewares/errorHandler'); // El manejador 
 const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
 const promBundle = require("express-prom-bundle");
 const messageProducer = require('./infrastructure/messaging/message.producer');
+const outboxPublisher = require('./infrastructure/messaging/outbox.publisher');
+const compensacionWorker = require('./infrastructure/workers/compensacion.worker');
 
 const app = express();
 const metricsMiddleware = promBundle({
@@ -41,6 +43,8 @@ if (require.main === module) {
     app.listen(config.port, () => {
         console.log(`MS_Tutorias (Orquestador) escuchando en el puerto ${config.port}`);
         messageProducer.connect(); // Iniciar la conexión al RabbitMQ
+        outboxPublisher.start(); // Poller del patrón outbox (D2)
+        compensacionWorker.start(); // Worker de reintentos de compensación de agenda (D6)
     });
 }
 

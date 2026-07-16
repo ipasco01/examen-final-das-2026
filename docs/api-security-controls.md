@@ -123,6 +123,7 @@ Estado: **parcial**. Hay manifiestos de gateway, pero usan secreto demo y no doc
 | --- | --- | --- | --- |
 | `Authorization: Bearer <token>` | Cliente → API | Autenticación de `POST /tutorias`; JWT emitido por `ms-auth`. | Implementado |
 | `X-Correlation-ID` | Cliente → API y API → cliente | Correlación de logs, llamadas internas y eventos de tracking. Si falta, algunos servicios generan uno. | Implementado/parcial |
+| `Idempotency-Key` | Cliente → `ms-tutorias` | Obligatorio en `POST /tutorias`; deduplica reintentos del cliente devolviendo la tutoría ya creada en vez de reejecutar la Saga. Sin este header, la API responde `400`. | Implementado |
 | `X-Demo-Fail-After-Bloqueo: true` | Cliente → `ms-tutorias` | Activa una falla demo posterior al bloqueo solo si también existe `ENABLE_DEMO_FAULT_INJECTION=true`. | Implementado para validación controlada |
 
 El header de fault injection no debe usarse en flujos normales. Su gating actual requiere dos condiciones simultáneas: variable de entorno habilitada y header explícito. Esto reduce activaciones accidentales, pero sigue siendo una capacidad de demo que debe permanecer deshabilitada fuera de validaciones controladas.

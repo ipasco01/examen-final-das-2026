@@ -4,6 +4,14 @@ const postSolicitud = async (req, res, next) => {
     try {
         // ================== INICIO DE CAMBIOS ==================
 
+        // 0. IDEMPOTENCY-KEY (OBLIGATORIO)
+        // Sin esta clave no podemos deduplicar reintentos del cliente, así que se exige antes de cualquier
+        // otra validación.
+        const idempotencyKey = req.header('Idempotency-Key');
+        if (!idempotencyKey) {
+            throw { statusCode: 400, message: 'El header Idempotency-Key es obligatorio para solicitar una tutoría.' };
+        }
+
         // 1. VERIFICACIÓN DE ROL (AUTORIZACIÓN)
         // El objeto req.user fue añadido por nuestro middleware jwt.middleware.js
         if (req.user.role !== 'student') {
@@ -17,7 +25,8 @@ const postSolicitud = async (req, res, next) => {
         // el idEstudiante con el que viene en el token (req.user.sub).
         const datosConfiables = {
             ...req.body,
-            idEstudiante: req.user.sub // 'sub' es el campo estándar para el ID de sujeto en JWT.
+            idEstudiante: req.user.sub, // 'sub' es el campo estándar para el ID de sujeto en JWT.
+            idempotencyKey
         };
         
         const correlationId = req.correlationId;

@@ -159,7 +159,8 @@ CREATE TABLE tutorias (
     estado VARCHAR(50) NOT NULL CHECK (estado IN ('PENDIENTE', 'CONFIRMADA', 'FALLIDA', 'CANCELADA')),
     createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    error VARCHAR(500)
+    error VARCHAR(500),
+    idempotencyKey VARCHAR(255) UNIQUE
 );
 
 CREATE INDEX idx_tutorias_idEstudiante ON tutorias(idEstudiante);
@@ -178,7 +179,92 @@ CREATE TRIGGER set_timestamp
 BEFORE UPDATE ON tutorias
 FOR EACH ROW
 EXECUTE PROCEDURE trigger_set_timestamp();
+
+-- Patrón outbox (D2): la confirmación de la tutoría y el encolado de su notificación se
+-- confirman en la misma transacción (ver tutoria.repository.js#save + outbox.repository.js). Un
+-- poller en ms-tutorias (outbox.publisher.js) publica las filas PENDIENTE en
+-- notificaciones_email_queue.
+CREATE TABLE tutorias_notificaciones_outbox (
+    idOutbox UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    idTutoria UUID NOT NULL REFERENCES tutorias(idTutoria),
+    payload JSONB NOT NULL,
+    estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE', 'PUBLICADO', 'FALLIDO')),
+    intentos INTEGER NOT NULL DEFAULT 0,
+    createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    publishedAt TIMESTAMPTZ,
+    ultimoError VARCHAR(500)
+);
+
+CREATE INDEX idx_outbox_estado ON tutorias_notificaciones_outbox(estado);
+
+-- Compensación de agenda pendiente (D6): si el loop de reintentos síncronos de
+-- tutoria.service.js agota sus intentos al desbloquear agenda, se registra aquí (misma
+-- transacción que el UPDATE a FALLIDA) en vez de solo publicarse a una cola sin consumidor. Un
+-- worker en ms-tutorias (compensacion.worker.js) reclama las filas PENDIENTE y reintenta
+-- agendaClient.cancelarBloqueo en segundo plano.
+CREATE TABLE compensaciones_pendientes (
+    idCompensacion UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    idBloqueo UUID NOT NULL,
+    idTutoria UUID NOT NULL REFERENCES tutorias(idTutoria),
+    idTutor VARCHAR(50) NOT NULL,
+    correlationId VARCHAR(255),
+    motivo VARCHAR(500),
+    estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE', 'RESUELTO', 'FALLIDO')),
+    intentos INTEGER NOT NULL DEFAULT 0,
+    createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    resolvedAt TIMESTAMPTZ,
+    ultimoError VARCHAR(500)
+);
+
+CREATE INDEX idx_compensaciones_pendientes_estado ON compensaciones_pendientes(estado);
 ```
+
+> `POST /tutorias` exige el header `Idempotency-Key`; `ms-tutorias` la persiste en la columna
+> `idempotencyKey` para deduplicar reintentos. Si `db_tutorias` ya existe de una instalación previa (sin esta
+> columna), aplicar manualmente en vez de recrear la tabla:
+>
+> ```sql
+> ALTER TABLE tutorias ADD COLUMN idempotencyKey VARCHAR(255) UNIQUE;
+> ```
+
+> Si `db_tutorias` ya existe de una instalación previa (sin la tabla `tutorias_notificaciones_outbox` del
+> patrón outbox), aplicar manualmente en vez de recrear la base:
+>
+> ```sql
+> CREATE TABLE tutorias_notificaciones_outbox (
+>     idOutbox UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+>     idTutoria UUID NOT NULL REFERENCES tutorias(idTutoria),
+>     payload JSONB NOT NULL,
+>     estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE', 'PUBLICADO', 'FALLIDO')),
+>     intentos INTEGER NOT NULL DEFAULT 0,
+>     createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+>     publishedAt TIMESTAMPTZ,
+>     ultimoError VARCHAR(500)
+> );
+>
+> CREATE INDEX idx_outbox_estado ON tutorias_notificaciones_outbox(estado);
+> ```
+
+> Si `db_tutorias` ya existe de una instalación previa (sin la tabla `compensaciones_pendientes`), aplicar
+> manualmente en vez de recrear la base:
+>
+> ```sql
+> CREATE TABLE compensaciones_pendientes (
+>     idCompensacion UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+>     idBloqueo UUID NOT NULL,
+>     idTutoria UUID NOT NULL REFERENCES tutorias(idTutoria),
+>     idTutor VARCHAR(50) NOT NULL,
+>     correlationId VARCHAR(255),
+>     motivo VARCHAR(500),
+>     estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE', 'RESUELTO', 'FALLIDO')),
+>     intentos INTEGER NOT NULL DEFAULT 0,
+>     createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+>     resolvedAt TIMESTAMPTZ,
+>     ultimoError VARCHAR(500)
+> );
+>
+> CREATE INDEX idx_compensaciones_pendientes_estado ON compensaciones_pendientes(estado);
+> ```
 
 ## Verificar accesos
 
@@ -207,6 +293,7 @@ En RabbitMQ Management, revisar que la cola `notificaciones_email_queue` tenga c
 7. Revisar RabbitMQ Management y confirmar que la cola `notificaciones_email_queue` tenga consumidor activo o actividad asociada al flujo.
 8. Revisar logs de los servicios relevantes para identificar la secuencia: autenticación, validación de usuario/tutor, bloqueo de agenda, registro de tutoría y notificación.
 9. Opcional: si se usa un cliente HTTP externo, enviar un `X-Correlation-ID` propio para rastrear la solicitud en logs y eventos.
+10. Si se usa un cliente HTTP externo (no `client-mobile-sim`), enviar también el header `Idempotency-Key` (cualquier valor único por solicitud); sin este header `ms-tutorias` responde `400`.
 
 ## Casos de comprobación local
 

@@ -1,0 +1,11 @@
+groups:
+  - name: tutorias-compensacion
+    rules:
+      - alert: CompensacionAgendaFallida
+        expr: increase(compensacion_fallida_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Compensación de agenda fallida en ms-tutorias"
+          description: "Al menos una compensación de bloqueo de agenda agotó sus reintentos en los últimos 5 minutos."

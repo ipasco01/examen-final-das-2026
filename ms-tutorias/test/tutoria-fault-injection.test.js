@@ -17,7 +17,7 @@ const clearModule = (filePath) => {
     delete require.cache[require.resolve(filePath)];
 };
 
-const createRequest = ({ headerValue }) => ({
+const createRequest = ({ headerValue, idempotencyKey = 'idem-test-key' }) => ({
     user: { role: 'student', sub: 'student-from-token' },
     body: {
         idEstudiante: 'student-from-body',
@@ -27,7 +27,11 @@ const createRequest = ({ headerValue }) => ({
         materia: 'Arquitectura de Software'
     },
     correlationId: 'cid-test',
-    header: (name) => name === 'X-Demo-Fail-After-Bloqueo' ? headerValue : undefined
+    header: (name) => {
+        if (name === 'X-Demo-Fail-After-Bloqueo') return headerValue;
+        if (name === 'Idempotency-Key') return idempotencyKey;
+        return undefined;
+    }
 });
 
 const createResponse = () => {
@@ -54,16 +58,23 @@ const loadControllerWithStubs = () => {
         agenda: [],
         cancellations: [],
         notifications: [],
+        outbox: [],
         tracking: [],
         order: []
     };
 
     const repository = {
-        save: async (payload) => {
+        findByIdempotencyKey: async () => null,
+        save: async (payload, options = {}) => {
             calls.saves.push(payload);
 
             if (payload.idTutoria) {
-                calls.order.push(`save:${payload.estado}`);
+                if (options.outboxNotificacion) {
+                    calls.outbox.push({ idTutoria: payload.idTutoria, payload: options.outboxNotificacion });
+                    calls.order.push(`save:${payload.estado}+outbox`);
+                } else {
+                    calls.order.push(`save:${payload.estado}`);
+                }
                 return { idtutoria: payload.idTutoria, ...payload };
             }
 
@@ -166,7 +177,7 @@ test('does not inject failure by default even when the demo header is present', 
     assert.equal(res.statusCode, 201);
     assert.equal(res.body.estado, 'CONFIRMADA');
     assert.deepEqual(calls.cancellations, []);
-    assert.equal(calls.notifications.length, 1);
+    assert.equal(calls.outbox.length, 1);
     assert.deepEqual(calls.saves.map((save) => save.estado), ['PENDIENTE', 'CONFIRMADA']);
 });
 
@@ -180,7 +191,7 @@ test('does not inject failure when env is enabled but the demo header is absent'
     assert.equal(res.statusCode, 201);
     assert.equal(res.body.estado, 'CONFIRMADA');
     assert.deepEqual(calls.cancellations, []);
-    assert.equal(calls.notifications.length, 1);
+    assert.equal(calls.outbox.length, 1);
     assert.deepEqual(calls.saves.map((save) => save.estado), ['PENDIENTE', 'CONFIRMADA']);
 });
 
@@ -197,6 +208,7 @@ test('injects failure after agenda blocking and compensates the bloqueo when bot
 
     assert.deepEqual(calls.cancellations, [{ idBloqueo: 'bloqueo-1', correlationId: 'cid-test' }]);
     assert.equal(calls.notifications.length, 0);
+    assert.equal(calls.outbox.length, 0);
     assert.deepEqual(calls.saves.map((save) => save.estado), ['PENDIENTE', 'FALLIDA']);
     assert.ok(calls.order.indexOf('agenda:bloquear') < calls.order.indexOf('agenda:cancelar'));
     assert.equal(calls.order.includes('queue:notificacion'), false);

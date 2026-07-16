@@ -14,7 +14,7 @@ Este documento resume los contratos RabbitMQ identificados en el código y la co
 | Área | Estado | Evidencia principal | Observación |
 | --- | --- | --- | --- |
 | Broker RabbitMQ en entorno local | Implementado | `docker-compose.yml` | Servicio `rabbitmq` con AMQP `5672`, Management `15672` y credenciales locales. |
-| Cola de notificaciones | Implementado | `ms-tutorias/src/infrastructure/messaging/message.producer.js`, `ms-notificaciones/src/app.js` | Publicación directa a cola durable `notificaciones_email_queue`. |
+| Cola de notificaciones | Implementado | `ms-tutorias/src/infrastructure/messaging/message.producer.js`, `ms-notificaciones/src/app.js` | Publicación a cola durable `notificaciones_email_queue` vía el poller del patrón outbox (ver `outbox.publisher.js`), no directo desde la Saga. |
 | DLX/DLQ de notificaciones | Implementado | `ms-notificaciones/src/app.js`, `ms-tutorias/src/infrastructure/messaging/message.producer.js` | DLX `notificaciones_dlx` y DLQ `notificaciones_dlq` configuradas para mensajes rechazados. |
 | Eventos de tracking | Parcial | Productores de `ms-usuarios`, `ms-agenda`, `ms-tutorias`, `ms-notificaciones`; `tracking-dashboard/src/server.js` | Existe payload común por convención de código, pero sin schema formal ni versionado. |
 | Validación formal de payloads | Parcial | `ms-notificaciones/src/domain/services/notificacion.service.js` | Se validan campos requeridos en runtime para email; no hay JSON Schema/OpenAPI/AsyncAPI. |
@@ -33,9 +33,13 @@ No se observó un exchange de negocio para notificaciones. El flujo vigente publ
 
 | Cola | Tipo/propiedad | Productor | Consumidor | Estado | Evidencia |
 | --- | --- | --- | --- | --- | --- |
-| `notificaciones_email_queue` | Durable, mensajes persistentes desde `ms-tutorias` | `ms-tutorias` | `ms-notificaciones` | Implementado | `publishToQueue('notificaciones_email_queue', payloadNotificacion)` y `channel.consume(queueName, ...)`. |
+| `notificaciones_email_queue` | Durable, mensajes persistentes desde `ms-tutorias` | `ms-tutorias` (poller de outbox) | `ms-notificaciones` | Implementado | `outbox.publisher.js` llama `publishToQueue('notificaciones_email_queue', row.payload)` para cada fila `PENDIENTE` de `tutorias_notificaciones_outbox`; `channel.consume(queueName, ...)` en `ms-notificaciones` sin cambios. |
 | `notificaciones_dlq` | Durable, vinculada a `notificaciones_dlx` con routing key `notificaciones_dlq` | RabbitMQ por dead-letter | Revisión manual/operativa; no hay consumidor automático en código | Implementado/parcial | `assertQueue(dlqName, { durable: true })` y `bindQueue(dlqName, dlxName, dlqName)`. |
 | Cola anónima exclusiva del dashboard | Exclusiva, nombre generado por RabbitMQ | `tracking_events_exchange` | `tracking-dashboard` | Implementado | `assertQueue('', { exclusive: true })` y `bindQueue(queue, EXCHANGE_NAME, '')`. |
+
+`agenda_compensacion_pendiente_queue` **fue reemplazada** (D6) por la tabla `compensaciones_pendientes` en
+`db_tutorias` + un worker con reintentos (`compensacion.worker.js`) — ver la sección "Compensación de agenda
+pendiente" más abajo. La cola nunca tuvo consumidor automático; el mecanismo actual sí reintenta activamente.
 
 ## DLQ y DLX
 
@@ -65,7 +69,7 @@ Estado: **implementado** para aislamiento de mensajes inválidos o fallidos. **P
 
 | Componente | Rol | Canal RabbitMQ | Estado | Evidencia |
 | --- | --- | --- | --- | --- |
-| `ms-tutorias` | Productor de notificaciones | `notificaciones_email_queue` | Implementado | `tutoria.service.js` construye `payloadNotificacion`; `message.producer.js` publica con `sendToQueue`. |
+| `ms-tutorias` | Productor de notificaciones | `notificaciones_email_queue` | Implementado | `tutoria.service.js` construye `payloadNotificacion` y lo encola en `tutorias_notificaciones_outbox` (misma transacción que el `UPDATE` a `CONFIRMADA`); `outbox.publisher.js` (poller) publica con `sendToQueue` vía `message.producer.js`. |
 | `ms-tutorias` | Productor de tracking | `tracking_events_exchange` | Implementado/parcial | Publica eventos de avance, errores, compensaciones y Circuit Breaker. |
 | `ms-usuarios` | Productor de tracking | `tracking_events_exchange` | Implementado/parcial | Controlador publica búsquedas, éxitos y errores. |
 | `ms-agenda` | Productor de tracking | `tracking_events_exchange` | Implementado/parcial | Controlador publica disponibilidad, bloqueo, conflictos y compensación. |
@@ -119,7 +123,8 @@ Payload mínimo observado:
   "message": "Descripción del evento",
   "cid": "uuid-o-identificador-correlacionado",
   "timestamp": "2026-06-24T00:00:00.000Z",
-  "status": "INFO"
+  "status": "INFO",
+  "idempotencyKey": "string-o-null"
 }
 ```
 
@@ -130,6 +135,7 @@ Payload mínimo observado:
 | `cid` | string | Sí | Agrupa eventos por transacción y color. | Dashboard ejecuta `evento.cid.substring(...)`. |
 | `timestamp` | date/string serializado | Parcial | Se publica, pero el dashboard actual no lo muestra. | Productores envían `new Date()`. |
 | `status` | string (`INFO`/`ERROR` observado) | Parcial | Marca visualmente errores si vale `ERROR`. | Dashboard agrega clase `error` cuando `evento.status === 'ERROR'`. |
+| `idempotencyKey` | string o `null` | Parcial, solo `ms-tutorias` | Permite filtrar en el dashboard todos los eventos de una misma solicitud (incluyendo reintentos/short-circuits idempotentes). | `tutoria.service.js` la incluye en cada `track(...)`; `ms-usuarios`, `ms-agenda` y `ms-notificaciones` no la conocen y no la publican. Dashboard la muestra en la burbuja y permite filtrar con el input `#idempotency-filter`. |
 
 Servicios observados en eventos de tracking:
 
@@ -139,6 +145,72 @@ Servicios observados en eventos de tracking:
 | `MS_Agenda` | `ms-agenda` | Implementado |
 | `MS_Tutorias` | `ms-tutorias` | Implementado |
 | `MS_Notificaciones` | `ms-notificaciones` | Implementado |
+
+### Compensación de agenda pendiente (tabla, no cola)
+
+Tabla: `compensaciones_pendientes` en `db_tutorias` (reemplaza a la antigua `agenda_compensacion_pendiente_queue`,
+que nunca tuvo consumidor; ver D6).
+
+Estado: **implementado**. Cuando el loop de reintentos síncronos de `tutoria.service.js` agota
+`COMPENSACION_AGENDA_MAX_INTENTOS` intentando `agendaClient.cancelarBloqueo`, se inserta una fila `PENDIENTE`
+en esta tabla dentro de la **misma transacción** que el `UPDATE` a `FALLIDA` (mismo mecanismo que el outbox de
+notificaciones, ver `tutoria.repository.js#save()` + `compensacion.repository.js`) -- si el `UPDATE` no afecta
+ninguna fila, tampoco se inserta el registro de compensación pendiente. Un worker en el mismo proceso
+(`ms-tutorias/src/infrastructure/workers/compensacion.worker.js`, `setInterval` cada
+`COMPENSACION_PENDIENTE_POLL_INTERVAL_MS`, default 5000ms) reclama filas `PENDIENTE` con
+`SELECT ... FOR UPDATE SKIP LOCKED` y reintenta `agendaClient.cancelarBloqueo`; en éxito marca `RESUELTO`, en
+fallo incrementa `intentos` y, tras `COMPENSACION_PENDIENTE_MAX_INTENTOS` (default 3), pasa a `FALLIDO`
+(revisión manual) e incrementa la métrica `compensacion_fallida_total{etapa="worker"}`.
+
+Columnas:
+
+| Campo | Tipo | Uso |
+| --- | --- | --- |
+| `idCompensacion` | UUID | Identificador de la fila. |
+| `idBloqueo` | UUID | Bloqueo de agenda que quedó sin cancelar. |
+| `idTutoria` | UUID | Referencia a la tutoría marcada `FALLIDA` que originó la compensación. |
+| `idTutor` | string | Tutor afectado por el bloqueo huérfano. |
+| `correlationId` | string | Correlación con logs y eventos de tracking de la solicitud original. |
+| `motivo` | string | Mensaje del último error síncrono de `agendaClient.cancelarBloqueo`. |
+| `estado` | `PENDIENTE`/`RESUELTO`/`FALLIDO` | Ciclo de vida de la fila. |
+| `intentos` | integer | Cantidad de reintentos del worker realizados. |
+| `ultimoError` | string | Último error de reintento registrado por el worker. |
+| `resolvedAt` | timestamp | Momento en que el worker resolvió la compensación. |
+
+`SKIP LOCKED` evita que dos ticks del worker (uno solapado con el anterior, o dos instancias del servicio en
+el futuro) procesen la misma fila dos veces; el guard `isRunning` en memoria evita además que el mismo proceso
+solape ticks entre sí. Ver también `compensacion_fallida_total` en el runbook de observabilidad para la
+métrica/alerta asociada.
+
+### Outbox de notificaciones (patrón outbox)
+
+Tabla: `tutorias_notificaciones_outbox` en `db_tutorias` (no es un canal RabbitMQ, es la fuente de verdad
+intermedia entre la Saga y `notificaciones_email_queue`).
+
+Estado: **implementado**. `tutoria.service.js` ya no publica directo a `notificaciones_email_queue`; en su lugar,
+`tutoria.repository.js#save()` inserta una fila `PENDIENTE` en esta tabla dentro de la misma transacción que el
+`UPDATE` a `CONFIRMADA` (ver `ms-tutorias/src/config/db.js#withTransaction`) -- si el `UPDATE` no afecta ninguna
+fila (transición inválida), la fila de outbox tampoco se inserta. Un poller en el mismo proceso
+(`ms-tutorias/src/infrastructure/messaging/outbox.publisher.js`, `setInterval` cada `OUTBOX_POLL_INTERVAL_MS`,
+default 3000ms) reclama filas `PENDIENTE` con `SELECT ... FOR UPDATE SKIP LOCKED` y llama a `publishToQueue`; en
+éxito marca `PUBLICADO`, en fallo incrementa `intentos` y, tras `OUTBOX_MAX_INTENTOS` (default 5), pasa a
+`FALLIDO` (revisión manual, mismo espíritu que `notificaciones_dlq` y `compensaciones_pendientes`).
+
+Columnas:
+
+| Campo | Tipo | Uso |
+| --- | --- | --- |
+| `idOutbox` | UUID | Identificador de la fila. |
+| `idTutoria` | UUID | Referencia a la tutoría confirmada que originó la notificación. |
+| `payload` | JSONB | El mismo `payloadNotificacion` que antes se publicaba directo (`destinatario`, `asunto`, `cuerpo`, `correlationId`). |
+| `estado` | `PENDIENTE`/`PUBLICADO`/`FALLIDO` | Ciclo de vida de la fila. |
+| `intentos` | integer | Cantidad de intentos de publicación fallidos. |
+| `ultimoError` | string | Último error de publicación registrado. |
+| `publishedAt` | timestamp | Momento en que se publicó exitosamente. |
+
+`SKIP LOCKED` evita que dos ticks del poller (uno solapado con el anterior, o dos instancias del servicio en el
+futuro) procesen la misma fila dos veces; el guard `isRunning` en memoria evita además que el mismo proceso
+solape ticks entre sí.
 
 ## Evidencia esperada de cableado
 
@@ -159,8 +231,13 @@ Servicios observados en eventos de tracking:
 - **Pendiente:** no hay campo `version` en los eventos ni política explícita de compatibilidad.
 - **Riesgo:** el dashboard asume que `cid` existe; un evento sin `cid` puede fallar al renderizar por `substring`.
 - **Riesgo:** los productores de tracking no esperan confirmación de publicación ni usan publisher confirms.
-- **Riesgo:** `publishToQueue` puede retornar sin publicar si el canal aún no está conectado; actualmente solo hace `return` silencioso cuando `channel` es `null`.
+- **Resuelto:** `publishToQueue` puede seguir retornando sin publicar si el canal aún no está conectado (ahora retorna `false` en vez de un `return` silencioso), pero ya no es el único punto de fallo para la notificación de una tutoría confirmada: el patrón outbox (ver arriba) garantiza que la intención de notificar quedó persistida de forma atómica con el `UPDATE` a `CONFIRMADA`, y el poller reintenta hasta `OUTBOX_MAX_INTENTOS`.
 - **Parcial:** `notificaciones_dlq` existe para inspección, pero no hay flujo implementado de reintento, replay o descarte controlado.
+- **Resuelto:** los bloqueos de agenda no compensados ya no dependen de una cola sin consumidor
+  (`agenda_compensacion_pendiente_queue`, reemplazada); la tabla `compensaciones_pendientes` + el worker
+  reintentan activamente y exponen la métrica `compensacion_fallida_total`. Sigue sin haber replay/descarte
+  formal para las filas que terminan en `FALLIDO` tras agotar los reintentos del worker.
+- **Parcial:** el poller del outbox de notificaciones (`outbox.publisher.js`) tampoco tiene una cola/consumidor separado para las filas que llegan a `FALLIDO` tras agotar `OUTBOX_MAX_INTENTOS` -- quedan en la tabla para revisión manual, mismo alcance que `notificaciones_dlq`.
 - **Parcial:** `timestamp` se publica en tracking, pero no se usa como criterio de orden ni se muestra en el dashboard.
 - **Pendiente:** no hay pruebas automatizadas específicas para contrato de cola, DLQ o estructura de eventos de tracking.
 

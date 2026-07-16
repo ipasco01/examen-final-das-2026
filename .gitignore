@@ -29,3 +29,13 @@ node_modules/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 6. Claude Code
+.claude/
+**/.claude/
+CLAUDE.local.md
+.claude.json
+.claude.json.backup
+
+CLAUDE.md   
+TODO.md

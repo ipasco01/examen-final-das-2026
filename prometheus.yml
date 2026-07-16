@@ -1,6 +1,9 @@
 global:
   scrape_interval: 5s # Escanear cada 5 segundos (agresivo para demos, 15s es normal)
 
+rule_files:
+  - 'alert_rules.yml'
+
 scrape_configs:
   - job_name: 'tutorias_services'
     static_configs:
