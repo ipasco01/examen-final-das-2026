@@ -10,6 +10,7 @@ services:
       - PORT=4000
       - JWT_SECRET=${JWT_SECRET:-local-dev-jwt-secret-change-me}
       - JWT_EXPIRES_IN=1h
+      - SERVICE_NAME=MS_Auth
 
   # --- Servicio de Usuarios ---
   ms-usuarios:
@@ -24,6 +25,7 @@ services:
       - DB_USER=user_usuarios
       - DB_PASSWORD=password_usuarios
       - DB_NAME=db_usuarios
+      - SERVICE_NAME=MS_Usuarios
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
     depends_on:
       # Asegura que la BD inicie antes que el servicio
@@ -43,6 +45,7 @@ services:
       - DB_USER=user_agenda
       - DB_PASSWORD=password_agenda
       - DB_NAME=db_agenda
+      - SERVICE_NAME=MS_Agenda
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
     depends_on:
       # Depende de su propia BD
@@ -70,6 +73,7 @@ services:
     environment:
       - PORT=3003
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
+      - SERVICE_NAME=MS_Notificaciones
     depends_on:
       - rabbitmq # Asegura que RabbitMQ inicie antes que este servicio
 
@@ -108,6 +112,7 @@ services:
       - DB_USER=user_tutorias
       - DB_PASSWORD=password_tutorias
       - DB_NAME=db_tutorias
+      - SERVICE_NAME=MS_Tutorias
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
     depends_on:
       - ms-auth
