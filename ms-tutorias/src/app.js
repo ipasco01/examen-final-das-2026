@@ -1,6 +1,9 @@
 // ms-tutorias/src/app.js
 
 const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const config = require('./config'); // Importamos nuestra configuración centralizada
 const tutoriasRouter = require('./api/routes/tutorias.routes');
 const errorHandler = require('./api/middlewares/errorHandler'); // El manejador de errores reutilizable
@@ -11,6 +14,11 @@ const outboxPublisher = require('./infrastructure/messaging/outbox.publisher');
 const compensacionWorker = require('./infrastructure/workers/compensacion.worker');
 
 const app = express();
+
+app.use(helmet());
+app.use(cors());
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }));
+
 const metricsMiddleware = promBundle({
     includeMethod: true,
     includePath: true,

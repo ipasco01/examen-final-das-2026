@@ -4,6 +4,7 @@ require('dotenv').config();
 module.exports = {
     port: process.env.PORT || 3001,
     rabbitmqUrl: process.env.RABBITMQ_URL || 'amqp://localhost:5672',
+    jwtSecret: process.env.JWT_SECRET,
     db: {
         host: process.env.DB_HOST || 'localhost',
         port: process.env.DB_PORT || 5432,

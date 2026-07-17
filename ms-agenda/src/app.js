@@ -1,5 +1,8 @@
 // ms-agenda/src/app.js
 const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const config = require('./config'); // <-- USAR EL NUEVO CONFIG
 const agendaRouter = require('./api/routes/agenda.routes');
 const errorHandler = require('./api/middlewares/errorHandler');
@@ -8,6 +11,10 @@ const messageProducer = require('./infrastructure/messaging/message.producer'); 
 const promBundle = require("express-prom-bundle");
 
 const app = express();
+
+app.use(helmet());
+app.use(cors());
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }));
 
 const metricsMiddleware = promBundle({
     includeMethod: true,
