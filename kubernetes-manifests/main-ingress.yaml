@@ -1,0 +1,38 @@
+# kubernetes-manifests/main-ingress.yaml
+#
+# Ingress único y consolidado (reemplaza a public-ingress.yaml, protected-ingress.yaml y
+# kong-ingress.yaml, que definían las mismas rutas de forma duplicada e inconsistente entre sí).
+#
+# Este Ingress NO lleva la anotación `konghq.com/plugins` a nivel de Ingress a propósito: esa
+# anotación aplicaría el plugin JWT a TODAS las rutas del recurso por igual (incluida /auth, que es
+# el propio endpoint de emisión de tokens -- exigirle un JWT para poder pedir un JWT es
+# contradictorio y fue exactamente el bug de kong-ingress.yaml).
+#
+# En su lugar, `jwt-validation-plugin` está anotado sobre el Service `ms-tutorias-service`
+# (ver kubernetes-manifests/ms-tutorias.yaml), que es el nivel de scoping correcto en Kong
+# Ingress Controller para proteger un backend específico sin afectar a los demás que comparten
+# el mismo Ingress. `ms-auth-service` no lleva esa anotación, así que /auth queda público por
+# diseño explícito, no por omisión.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: main-api-ingress
+spec:
+  ingressClassName: kong
+  rules:
+  - http:
+      paths:
+        - path: /auth
+          pathType: Prefix
+          backend:
+            service:
+              name: ms-auth-service
+              port:
+                number: 4000
+        - path: /tutorias
+          pathType: Prefix
+          backend:
+            service:
+              name: ms-tutorias-service
+              port:
+                number: 3000

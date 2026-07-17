@@ -12,9 +12,13 @@
   "license": "ISC",
   "dependencies": {
     "amqplib": "^0.10.9",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "express-prom-bundle": "^8.0.0",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
     "pg": "^8.16.3",
     "prom-client": "^15.1.3"
   },

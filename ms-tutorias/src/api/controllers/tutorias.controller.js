@@ -51,11 +51,15 @@ const postSolicitud = async (req, res, next) => {
         
         const correlationId = req.correlationId;
         const demoFailAfterBloqueo = req.header('X-Demo-Fail-After-Bloqueo') === 'true';
+        // Reenviamos el mismo token del usuario a ms-usuarios/ms-agenda: ya pasó verifyToken aquí,
+        // así que es válido para las llamadas server-to-server de esta misma Saga.
+        const authHeader = req.header('Authorization');
 
         // 3. PASAR DATOS CONFIABLES AL SERVICIO
         // El servicio ahora recibirá un idEstudiante que sabemos que es auténtico.
         const resultado = await tutoriaService.solicitarTutoria(datosConfiables, correlationId, {
-            demoFailAfterBloqueo
+            demoFailAfterBloqueo,
+            authHeader
         });
         
         // =================== FIN DE CAMBIOS ===================

@@ -30,6 +30,7 @@ const COMPENSACION_BASE_DELAY_MS = Number(process.env.COMPENSACION_AGENDA_BASE_D
 
 const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => {
     const { idEstudiante, idTutor, fechaSolicitada, duracionMinutos, materia, idempotencyKey } = datosSolicitud;
+    const { authHeader } = options;
 
     // Envuelve track() para no repetir correlationId/idempotencyKey en cada llamada de este flujo;
     // el dashboard necesita la idempotencyKey en cada evento para poder filtrar la traza de una solicitud.
@@ -50,8 +51,8 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
         // --- 1. Validar usuarios ---
         trackCid('Validando usuarios...');
         const [estudiante, tutor] = await Promise.all([
-            usuariosClient.getUsuario('estudiantes', idEstudiante, correlationId),
-            usuariosClient.getUsuario('tutores', idTutor, correlationId)
+            usuariosClient.getUsuario('estudiantes', idEstudiante, correlationId, authHeader),
+            usuariosClient.getUsuario('tutores', idTutor, correlationId, authHeader)
         ]);
         if (!estudiante) throw Object.assign(new Error('Estudiante no encontrado'), { statusCode: 404 });
         if (!tutor) throw Object.assign(new Error('Tutor no encontrado'), { statusCode: 404 });
@@ -59,7 +60,7 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
 
         // --- 2. Verificar agenda ---
         trackCid('Verificando disponibilidad de agenda...');
-        const disponible = await agendaClient.verificarDisponibilidad(idTutor, fechaSolicitada, correlationId);
+        const disponible = await agendaClient.verificarDisponibilidad(idTutor, fechaSolicitada, correlationId, authHeader);
         if (!disponible) throw Object.assign(new Error('Horario no disponible'), { statusCode: 409 });
         trackCid('Agenda verificada (disponible).');
 
@@ -80,7 +81,7 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
         // --- 4. Comandos de la Saga ---
         trackCid('Bloqueando horario en agenda...');
         const payloadAgenda = { fechaInicio: fechaSolicitada, duracionMinutos, idEstudiante };
-        bloqueoRealizado = await agendaClient.bloquearAgenda(idTutor, payloadAgenda, correlationId);
+        bloqueoRealizado = await agendaClient.bloquearAgenda(idTutor, payloadAgenda, correlationId, authHeader);
         const idBloqueo = bloqueoRealizado.idBloqueo || bloqueoRealizado.idbloqueo;
         trackCid(`Bloqueo de agenda exitoso. ID: ${idBloqueo}`);
 
@@ -148,7 +149,7 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
 
             for (let intento = 1; intento <= COMPENSACION_MAX_INTENTOS && !compensacionExitosa; intento++) {
                 try {
-                    await agendaClient.cancelarBloqueo(idBloqueo, correlationId);
+                    await agendaClient.cancelarBloqueo(idBloqueo, correlationId, authHeader);
                     compensacionExitosa = true;
                     trackCid(`Compensación (Agenda) exitosa en intento ${intento}.`, 'ERROR');
                 } catch (compError) {

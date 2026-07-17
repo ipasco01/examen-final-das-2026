@@ -3,6 +3,7 @@ require('dotenv').config();
 
 module.exports = {
     port: process.env.PORT || 3002,
-    rabbitmqUrl: process.env.RABBITMQ_URL || 'amqp://localhost:5672'
+    rabbitmqUrl: process.env.RABBITMQ_URL || 'amqp://localhost:5672',
+    jwtSecret: process.env.JWT_SECRET
     // Las config de BD ya se leen desde db.js
 };
