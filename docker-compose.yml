@@ -10,13 +10,7 @@ services:
       - PORT=4000
       - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
       - JWT_EXPIRES_IN=1h
-      - DB_HOST=db-auth
-      - DB_PORT=5432
-      - DB_USER=user_auth
-      - DB_PASSWORD=${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en tu .env raíz}
-      - DB_NAME=db_auth
-    depends_on:
-      - db-auth
+      - SERVICE_NAME=MS_Auth
 
   # --- Servicio de Usuarios ---
   ms-usuarios:
@@ -31,8 +25,8 @@ services:
       - DB_USER=user_usuarios
       - DB_PASSWORD=${USUARIOS_DB_PASSWORD:?Definí USUARIOS_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_usuarios
-      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:?Definí RABBITMQ_DEFAULT_USER en tu .env raíz}:${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}@rabbitmq:5672
-      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
+      - SERVICE_NAME=MS_Usuarios
+      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
     depends_on:
       # Asegura que la BD inicie antes que el servicio
       - db-usuarios
@@ -51,8 +45,8 @@ services:
       - DB_USER=user_agenda
       - DB_PASSWORD=${AGENDA_DB_PASSWORD:?Definí AGENDA_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_agenda
-      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:?Definí RABBITMQ_DEFAULT_USER en tu .env raíz}:${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}@rabbitmq:5672
-      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
+      - SERVICE_NAME=MS_Agenda
+      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
     depends_on:
       # Depende de su propia BD
       - db-agenda
@@ -78,7 +72,8 @@ services:
       - "3003:3003"
     environment:
       - PORT=3003
-      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:?Definí RABBITMQ_DEFAULT_USER en tu .env raíz}:${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}@rabbitmq:5672 # URL de conexión a RabbitMQ
+      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
+      - SERVICE_NAME=MS_Notificaciones
     depends_on:
       - rabbitmq # Asegura que RabbitMQ inicie antes que este servicio
 
@@ -117,7 +112,8 @@ services:
       - DB_USER=user_tutorias
       - DB_PASSWORD=${TUTORIAS_DB_PASSWORD:?Definí TUTORIAS_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_tutorias
-      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:?Definí RABBITMQ_DEFAULT_USER en tu .env raíz}:${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}@rabbitmq:5672 # URL de conexión a RabbitMQ
+      - SERVICE_NAME=MS_Tutorias
+      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
     depends_on:
       - ms-auth
       - ms-usuarios
