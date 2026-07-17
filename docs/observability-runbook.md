@@ -24,7 +24,7 @@ Observar el flujo completo de solicitud de tutoría para responder tres pregunta
 
 Incluye observabilidad básica para:
 
-- `POST /tutorias` como flujo orquestado principal;
+- `POST /v1/tutorias` como flujo orquestado principal;
 - propagación de `X-Correlation-ID` entre servicios HTTP;
 - eventos RabbitMQ del dashboard de tracking;
 - cola de notificaciones y DLQ;
@@ -41,7 +41,7 @@ La validación runtime reciente se ejecutó en entorno local controlado y dejó 
 | --- | --- | --- |
 | Inicialización DBs | `db_usuarios` quedó con `estudiantes` y `tutores` más 2 registros por tipo; `db_agenda` con `bloqueos`, índice y seed; `db_tutorias` con tabla, índices y trigger. | La inicialización se hizo después de confirmar DBs vacías; estado final: `bloqueos=1` solo seed y `tutorias=0`. |
 | Salud mínima | Usuarios respondió `200` para estudiante `e12345` y tutor `t54321`; agenda respondió `disponible:false` para slot seed ocupado y `disponible:true` para slot libre. | Evidencia de conectividad funcional mínima, no de cobertura completa de contratos. |
-| Happy path | `POST /tutorias` respondió `201` con tutoría `CONFIRMADA`. | Cleanup exacto de tutoría y bloqueo creados. |
+| Happy path | `POST /v1/tutorias` respondió `201` con tutoría `CONFIRMADA`. | Cleanup exacto de tutoría y bloqueo creados. |
 | Conflicto `409` | Repetir tutor/fecha respondió `409 Horario no disponible`; la base confirmó un solo bloqueo. | Cleanup exacto; evidencia válida para no duplicación del slot probado. |
 | Circuit Breaker/Toxiproxy | Toxic de latencia de 3000 ms; logs con `ABIERTO`, `HALF-OPEN` y `CERRADO`; Toxiproxy quedó con `toxics=[]`. | Puede aparecer un primer timeout crudo como `500 Timed out after 1500ms` antes de que el Circuit Breaker abra y responda fast-fail `503`. |
 | Saga compensation | Contenedor temporal con `ENABLE_DEMO_FAULT_INJECTION=true` más header `X-Demo-Fail-After-Bloqueo:true`; respuesta `500` controlada; tutoría `FALLIDA`; agenda quedó con 0 bloqueos para el slot. | El modo de fault injection fue temporal. Luego se restauró `ms-tutorias` normal sin env; con el header pero sin env, una solicitud válida volvió a `201 CONFIRMADA`. |
@@ -137,7 +137,7 @@ Objetivo: confirmar que una solicitud válida termina confirmada y deja evidenci
 
 Evidencia esperada:
 
-- Respuesta `201 Created` de `POST /tutorias`.
+- Respuesta `201 Created` de `POST /v1/tutorias`.
 - Header de respuesta `X-Correlation-ID` igual al enviado o generado.
 - Eventos de tracking de validación, agenda, bloqueo, notificación y confirmación.
 - Log de `ms-notificaciones` con mensaje procesado y confirmado con `ack`.

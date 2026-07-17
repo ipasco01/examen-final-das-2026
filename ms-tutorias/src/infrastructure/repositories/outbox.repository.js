@@ -45,4 +45,20 @@ const registrarIntentoFallido = async (client, idOutbox, intentosActuales, mensa
     );
 };
 
-module.exports = { insertarPendiente, reclamarPendientes, marcarPublicado, registrarIntentoFallido };
+// Reintento manual (R3): filas que agotaron OUTBOX_MAX_INTENTOS quedan en FALLIDO sin ningún
+// camino de vuelta más que tocar la base a mano. Esto reabre puntualmente las filas indicadas (o
+// todas las FALLIDO si no se pasa ninguna) para que el poller normal (outbox.publisher.js) las
+// vuelva a intentar en su próximo tick.
+const reencolarFallidos = async (client, idsOutbox) => {
+    const tieneFiltro = Array.isArray(idsOutbox) && idsOutbox.length > 0;
+    const res = await client.query(
+        `UPDATE ${OUTBOX_TABLE}
+         SET estado = 'PENDIENTE', intentos = 0, ultimoError = NULL
+         WHERE estado = 'FALLIDO'${tieneFiltro ? ' AND idOutbox = ANY($1)' : ''}
+         RETURNING idOutbox`,
+        tieneFiltro ? [idsOutbox] : []
+    );
+    return res.rows;
+};
+
+module.exports = { insertarPendiente, reclamarPendientes, marcarPublicado, registrarIntentoFallido, reencolarFallidos };

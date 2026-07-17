@@ -60,10 +60,10 @@ const getUsuario = async (tipo, id, correlationId) => {
             console.error(`[CircuitBreaker] Fallo rápido para ${url}`);
             // Reportar evento crítico al dashboard
             await reportOpenCircuit(correlationId);
-            throw {
-                statusCode: 503,
-                message: 'Servicio de usuarios no disponible temporalmente por timeout/red o Circuit Breaker abierto. Revisa la columna MS_Usuarios del dashboard para confirmar si la causa raíz es BD no inicializada, error interno o latencia.'
-            };
+            throw Object.assign(
+                new Error('Servicio de usuarios no disponible temporalmente por timeout/red o Circuit Breaker abierto. Revisa la columna MS_Usuarios del dashboard para confirmar si la causa raíz es BD no inicializada, error interno o latencia.'),
+                { statusCode: 503 }
+            );
         }
 
         // Cualquier otro error

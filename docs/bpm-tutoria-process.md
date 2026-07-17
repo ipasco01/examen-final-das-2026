@@ -4,7 +4,7 @@ Este documento describe la solicitud de tutoría como flujo académico-operativo
 
 ## Ruta rápida de revisión
 
-1. Iniciar el flujo con una solicitud autenticada a `POST /tutorias`.
+1. Iniciar el flujo con una solicitud autenticada a `POST /v1/tutorias`.
 2. Validar que el JWT identifica a un estudiante y que el servicio no confía en el `idEstudiante` enviado por el cuerpo.
 3. Confirmar que `ms-tutorias` valida estudiante/tutor, consulta agenda, crea una tutoría pendiente, bloquea agenda, publica notificación y confirma la tutoría.
 4. Revisar que cada paso usa `X-Correlation-ID` para tracking y evidencia operativa.
@@ -49,7 +49,7 @@ flowchart TD
 
 | Paso | Responsable/componente | Entrada | Salida | Errores principales | Evidencia actual |
 | --- | --- | --- | --- | --- | --- |
-| 1. Solicitud de tutoría | Cliente consumidor y `ms-tutorias` | `POST /tutorias`, body de solicitud, `Authorization: Bearer <token>`, `Idempotency-Key` obligatorio, `X-Correlation-ID` opcional | Request recibida y correlation ID disponible | Body incompleto o dependencias posteriores fallidas; `400` si falta `Idempotency-Key` | `ms-tutorias/src/api/routes/tutorias.routes.js`, `ms-tutorias/src/api/controllers/tutorias.controller.js`, OpenAPI en `ms-tutorias/docs/swagger.yaml` |
+| 1. Solicitud de tutoría | Cliente consumidor y `ms-tutorias` | `POST /v1/tutorias`, body de solicitud, `Authorization: Bearer <token>`, `Idempotency-Key` obligatorio, `X-Correlation-ID` opcional | Request recibida y correlation ID disponible | Body incompleto o dependencias posteriores fallidas; `400` si falta `Idempotency-Key` | `ms-tutorias/src/api/routes/tutorias.routes.js`, `ms-tutorias/src/api/controllers/tutorias.controller.js`, OpenAPI en `ms-tutorias/docs/swagger.yaml` |
 | 2. Autenticación JWT | `jwt.middleware.js` en `ms-tutorias` | Header `Authorization` | `req.user` con `sub`, `name`, `role`, `iss` | `401` si falta token, formato inválido, firma inválida o token expirado | `ms-tutorias/src/api/middlewares/jwt.middleware.js`; token emitido por `ms-auth/src/domain/services/auth.service.js` |
 | 3. Autorización e integridad de identidad | Controlador de tutorías | `req.user.role`, `req.user.sub`, body original | Payload confiable con `idEstudiante` tomado del JWT | `403` si el rol no es estudiante | `ms-tutorias/src/api/controllers/tutorias.controller.js` |
 | 3b. Deduplicación por Idempotency-Key | `ms-tutorias` (servicio) | `idempotencyKey` | Si ya existe una tutoría con esa clave, se retorna sin tocar usuarios/agenda/notificación | Ninguno (siempre corta antes de la Saga si la key ya existe) | `ms-tutorias/src/domain/services/tutoria.service.js`, `ms-tutorias/src/infrastructure/repositories/tutoria.repository.js` |
@@ -68,7 +68,7 @@ flowchart TD
 
 | Estado | Significado operativo | Estado de implementación | Evidencia |
 | --- | --- | --- | --- |
-| Solicitud recibida | El cliente inicia el trámite de tutoría mediante endpoint protegido. | Implementado | Ruta `POST /tutorias` con middleware JWT. |
+| Solicitud recibida | El cliente inicia el trámite de tutoría mediante endpoint protegido. | Implementado | Ruta `POST /v1/tutorias` con middleware JWT. |
 | Autenticada | El token se validó y el payload queda disponible para autorización. | Implementado/parcial | Validación local con secreto compartido; no se documenta rotación de claves ni introspección. |
 | Autorizada | Solo un usuario con rol de estudiante puede solicitar tutoría. | Implementado | El controlador rechaza otros roles con `403`. |
 | Identidad normalizada | El identificador del estudiante se toma del JWT, no del body. | Implementado | `idEstudiante: req.user.sub` en controlador. |

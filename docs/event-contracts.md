@@ -230,14 +230,28 @@ solape ticks entre sí.
 - **Pendiente:** no hay contratos AsyncAPI, JSON Schema ni validación formal de payloads RabbitMQ.
 - **Pendiente:** no hay campo `version` en los eventos ni política explícita de compatibilidad.
 - **Riesgo:** el dashboard asume que `cid` existe; un evento sin `cid` puede fallar al renderizar por `substring`.
-- **Riesgo:** los productores de tracking no esperan confirmación de publicación ni usan publisher confirms.
-- **Resuelto:** `publishToQueue` puede seguir retornando sin publicar si el canal aún no está conectado (ahora retorna `false` en vez de un `return` silencioso), pero ya no es el único punto de fallo para la notificación de una tutoría confirmada: el patrón outbox (ver arriba) garantiza que la intención de notificar quedó persistida de forma atómica con el `UPDATE` a `CONFIRMADA`, y el poller reintenta hasta `OUTBOX_MAX_INTENTOS`.
-- **Parcial:** `notificaciones_dlq` existe para inspección, pero no hay flujo implementado de reintento, replay o descarte controlado.
+- **Riesgo:** los productores de tracking (`publishTrackingEvent`) no esperan confirmación de publicación ni
+  usan publisher confirms -- alcance no crítico, es solo el canal de observabilidad, no de negocio.
+- **Resuelto:** `publishToQueue` (usada para `notificaciones_email_queue`, la cola de negocio) ahora corre sobre
+  un confirm channel (`connection.createConfirmChannel()`) y solo retorna `true` tras el ack real del broker en
+  `sendToQueue`, no apenas se escribe en el socket TCP. Además, ya no es el único punto de fallo para la
+  notificación de una tutoría confirmada: el patrón outbox (ver arriba) garantiza que la intención de notificar
+  quedó persistida de forma atómica con el `UPDATE` a `CONFIRMADA`, y el poller reintenta hasta
+  `OUTBOX_MAX_INTENTOS`.
+- **Resuelto:** `notificaciones_dlq` ya tiene un camino de replay controlado:
+  `ms-notificaciones/scripts/reencolar-dlq.js` (`npm run reencolar-dlq`) toma los mensajes que haya en la DLQ en
+  el momento en que corre y los republica en `notificaciones_email_queue`, confirmando (`ack`) su salida de la
+  DLQ solo después de republicarlos exitosamente.
 - **Resuelto:** los bloqueos de agenda no compensados ya no dependen de una cola sin consumidor
   (`agenda_compensacion_pendiente_queue`, reemplazada); la tabla `compensaciones_pendientes` + el worker
-  reintentan activamente y exponen la métrica `compensacion_fallida_total`. Sigue sin haber replay/descarte
-  formal para las filas que terminan en `FALLIDO` tras agotar los reintentos del worker.
-- **Parcial:** el poller del outbox de notificaciones (`outbox.publisher.js`) tampoco tiene una cola/consumidor separado para las filas que llegan a `FALLIDO` tras agotar `OUTBOX_MAX_INTENTOS` -- quedan en la tabla para revisión manual, mismo alcance que `notificaciones_dlq`.
+  reintentan activamente y exponen la métrica `compensacion_fallida_total`. Las filas que terminan en `FALLIDO`
+  tras agotar los reintentos del worker ahora tienen un camino de replay manual:
+  `ms-tutorias/scripts/reintentar-fallidos.js --compensaciones` (`npm run reintentar-fallidos -- --compensaciones`)
+  las reabre a `PENDIENTE` para que el worker las vuelva a tomar.
+- **Resuelto:** el poller del outbox de notificaciones (`outbox.publisher.js`) tenía las filas que llegan a
+  `FALLIDO` tras agotar `OUTBOX_MAX_INTENTOS` varadas para revisión manual directa en la base. Ahora
+  `ms-tutorias/scripts/reintentar-fallidos.js --outbox` (`npm run reintentar-fallidos -- --outbox`) las reabre a
+  `PENDIENTE` para que el poller normal las vuelva a intentar.
 - **Parcial:** `timestamp` se publica en tracking, pero no se usa como criterio de orden ni se muestra en el dashboard.
 - **Pendiente:** no hay pruebas automatizadas específicas para contrato de cola, DLQ o estructura de eventos de tracking.
 

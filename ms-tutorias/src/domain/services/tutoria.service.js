@@ -53,14 +53,14 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
             usuariosClient.getUsuario('estudiantes', idEstudiante, correlationId),
             usuariosClient.getUsuario('tutores', idTutor, correlationId)
         ]);
-        if (!estudiante) throw { statusCode: 404, message: 'Estudiante no encontrado' };
-        if (!tutor) throw { statusCode: 404, message: 'Tutor no encontrado' };
+        if (!estudiante) throw Object.assign(new Error('Estudiante no encontrado'), { statusCode: 404 });
+        if (!tutor) throw Object.assign(new Error('Tutor no encontrado'), { statusCode: 404 });
         trackCid('Usuarios validados exitosamente.');
 
         // --- 2. Verificar agenda ---
         trackCid('Verificando disponibilidad de agenda...');
         const disponible = await agendaClient.verificarDisponibilidad(idTutor, fechaSolicitada, correlationId);
-        if (!disponible) throw { statusCode: 409, message: 'Horario no disponible' };
+        if (!disponible) throw Object.assign(new Error('Horario no disponible'), { statusCode: 409 });
         trackCid('Agenda verificada (disponible).');
 
         // --- 3. Crear PENDIENTE ---
@@ -86,11 +86,10 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
 
         if (shouldFailAfterBloqueo(options)) {
             trackCid('Fault injection demo activado después del bloqueo de agenda.', 'ERROR');
-            throw {
+            throw Object.assign(new Error('Falla demo controlada después del bloqueo de agenda'), {
                 statusCode: 500,
-                message: 'Falla demo controlada después del bloqueo de agenda',
                 code: 'DEMO_FAULT_AFTER_BLOQUEO'
-            };
+            });
         }
 
         const payloadNotificacion = {
@@ -115,8 +114,16 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
     } catch (error) {
         const status = error.response?.status || error.statusCode || 500;
 
-        // Intentamos obtener el mensaje más específico posible
+        // Intentamos obtener el mensaje más específico posible (para logs/tracking internos).
         const msg = error.response?.data?.error?.message || error.message;
+
+        // E4: solo reenviamos ese mensaje al cliente si viene de un error HTTP real (axios
+        // error.response) o de un throw deliberado nuestro con statusCode explícito -- ambos casos
+        // ya traen un mensaje pensado para mostrarse. Un error inesperado (timeout de red crudo,
+        // ECONNREFUSED, una excepción de Postgres que burbujeó) no tiene statusCode ni response, y
+        // su .message es un detalle interno que no debería llegar tal cual a quien llamó a la API.
+        const tieneMensajeParaCliente = Boolean(error.response) || error.statusCode !== undefined;
+        const msgParaCliente = tieneMensajeParaCliente ? msg : 'Ocurrió un error inesperado al procesar la solicitud.';
 
         console.error(`[MS_Tutorias Service] - CID: ${correlationId} - Finalizando con error. Status: ${status}. Mensaje: ${msg}`);
 
@@ -182,7 +189,7 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
             }
         }
         // Relanzar el error manteniendo el contrato público existente.
-        throw { statusCode: status, message: `No se pudo completar la solicitud: ${msg}` };
+        throw Object.assign(new Error(`No se pudo completar la solicitud: ${msgParaCliente}`), { statusCode: status });
     }
 };
 

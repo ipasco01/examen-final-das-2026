@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "reencolar-dlq": "node scripts/reencolar-dlq.js"
   },
   "author": "edsaana",
   "license": "ISC",

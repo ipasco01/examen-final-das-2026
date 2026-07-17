@@ -219,7 +219,7 @@ CREATE TABLE compensaciones_pendientes (
 CREATE INDEX idx_compensaciones_pendientes_estado ON compensaciones_pendientes(estado);
 ```
 
-> `POST /tutorias` exige el header `Idempotency-Key`; `ms-tutorias` la persiste en la columna
+> `POST /v1/tutorias` exige el header `Idempotency-Key`; `ms-tutorias` la persiste en la columna
 > `idempotencyKey` para deduplicar reintentos. Si `db_tutorias` ya existe de una instalación previa (sin esta
 > columna), aplicar manualmente en vez de recrear la tabla:
 >

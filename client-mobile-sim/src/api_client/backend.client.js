@@ -18,7 +18,7 @@ const login = async (username, password) => {
 // --- FUNCIÓN MODIFICADA ---
 // Ahora acepta el token y el correlationId para los headers
 const solicitarTutoria = async (payload, token, correlationId) => {
-    const url = `${apiBaseUrl}/tutorias`;
+    const url = `${apiBaseUrl}/v1/tutorias`;
     console.log(`[CLIENT] ---> POST ${url} | Correlation-ID: ${correlationId}`);
     
     const response = await axios.post(url, payload, {

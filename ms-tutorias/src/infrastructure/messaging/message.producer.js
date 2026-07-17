@@ -12,7 +12,9 @@ const NOTIFICACIONES_DLQ_ROUTING_KEY = 'notificaciones_dlq';
 const connect = async () => {
     try {
         connection = await amqp.connect(rabbitmqUrl);
-        channel = await connection.createChannel();
+        // Canal en modo confirm: publishToQueue espera el ack real del broker antes de reportar
+        // éxito (ver más abajo), en vez de asumir éxito apenas se escribe en el socket TCP.
+        channel = await connection.createConfirmChannel();
 
         connection.on('error', (error) => {
             console.error('[MS_Tutorias] Error en conexión RabbitMQ:', error.message);
@@ -53,8 +55,16 @@ const publishToQueue = async (queueName, messagePayload) => {
 
         await channel.assertQueue(queueName, queueOptions);
         const messageBuffer = Buffer.from(JSON.stringify(messagePayload));
-        channel.sendToQueue(queueName, messageBuffer, { persistent: true });
-        console.log(`[MS_Tutorias] Mensaje publicado en la cola '${queueName}'`);
+        // sendToQueue en un confirm channel invoca este callback solo cuando el broker confirma
+        // (ack) o rechaza (nack) el mensaje -- ya no asumimos éxito con solo haberlo escrito en el
+        // socket TCP, que es lo que podía marcar una fila del outbox como PUBLICADO sin que
+        // RabbitMQ la hubiera persistido/ruteado realmente.
+        await new Promise((resolve, reject) => {
+            channel.sendToQueue(queueName, messageBuffer, { persistent: true }, (err) => {
+                if (err) reject(err); else resolve();
+            });
+        });
+        console.log(`[MS_Tutorias] Mensaje publicado y confirmado por el broker en la cola '${queueName}'`);
         return true;
     } catch (error) {
         console.error(`[MS_Tutorias] Error al publicar en cola:`, error.message);

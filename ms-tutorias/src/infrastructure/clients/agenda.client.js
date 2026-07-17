@@ -58,10 +58,10 @@ const fireRequest = async (method, url, correlationId, data) => {
         if (isOpenCircuitError(error)) {
             console.error(`[CircuitBreaker] Fallo rápido para ${url}`);
             await reportOpenCircuit(correlationId);
-            throw {
-                statusCode: 503,
-                message: 'Servicio de agenda no disponible temporalmente por timeout/red o Circuit Breaker abierto.'
-            };
+            throw Object.assign(
+                new Error('Servicio de agenda no disponible temporalmente por timeout/red o Circuit Breaker abierto.'),
+                { statusCode: 503 }
+            );
         }
 
         // Cualquier otro error (incluido el 409 de negocio, ver errorFilter arriba)
