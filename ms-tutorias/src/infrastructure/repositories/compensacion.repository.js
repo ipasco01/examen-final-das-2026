@@ -48,4 +48,19 @@ const registrarIntentoFallido = async (client, idCompensacion, intentosActuales,
     return { nuevoEstado, nuevosIntentos };
 };
 
-module.exports = { insertarPendiente, reclamarPendientes, marcarResuelto, registrarIntentoFallido };
+// Reintento manual (R3): mismo criterio que outbox.repository.js#reencolarFallidos -- reabre
+// puntualmente (o en bloque) las filas FALLIDO para que compensacion.worker.js las vuelva a
+// reclamar en su próximo tick, en vez de dejarlas varadas hasta una intervención directa en la BD.
+const reencolarFallidos = async (client, idsCompensacion) => {
+    const tieneFiltro = Array.isArray(idsCompensacion) && idsCompensacion.length > 0;
+    const res = await client.query(
+        `UPDATE ${COMPENSACIONES_TABLE}
+         SET estado = 'PENDIENTE', intentos = 0, ultimoError = NULL
+         WHERE estado = 'FALLIDO'${tieneFiltro ? ' AND idCompensacion = ANY($1)' : ''}
+         RETURNING idCompensacion`,
+        tieneFiltro ? [idsCompensacion] : []
+    );
+    return res.rows;
+};
+
+module.exports = { insertarPendiente, reclamarPendientes, marcarResuelto, registrarIntentoFallido, reencolarFallidos };

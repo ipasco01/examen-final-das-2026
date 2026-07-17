@@ -30,8 +30,8 @@ app.use(express.json()); // Permite al servidor entender y procesar bodies en fo
 app.use(correlationIdMiddleware); // Añadimos el middleware de correlationIdMiddleware
 
 // Enrutamiento principal
-// Cualquier petición a "/tutorias" será gestionada por nuestro router.
-app.use('/tutorias', tutoriasRouter);
+// Cualquier petición a "/v1/tutorias" será gestionada por nuestro router.
+app.use('/v1/tutorias', tutoriasRouter);
 
 // Middleware de manejo de errores
 // Debe ser el ÚLTIMO middleware que se añade.

@@ -1,14 +1,13 @@
 // src/api/middlewares/errorHandler.js
 
 const errorHandler = (err, req, res, next) => {
-    //console.error(`[ERROR] ${new Date().toISOString()}: ${err.message}`);
     console.error(`[ERROR] ${new Date().toISOString()}:`, err);
 
     const statusCode = err.statusCode || 500;
-    //const errorMessage = err.statusCode ? err.message : 'Ocurrió un error inesperado en el servidor.';
-
-    // Si el error no tiene un mensaje, proporcionamos uno genérico.
-    const errorMessage = err.message || 'Ocurrió un error inesperado en el servidor.';
+    // E3: mismo criterio que ms-agenda/ms-usuarios/ms-auth/ms-notificaciones -- un error sin
+    // statusCode explícito es un 500 no controlado, así que no reenviamos su err.message (puede
+    // traer detalle interno) y devolvemos uno genérico en su lugar.
+    const errorMessage = err.statusCode ? err.message : 'Ocurrió un error inesperado en el servidor.';
 
     res.status(statusCode).json({
         error: {

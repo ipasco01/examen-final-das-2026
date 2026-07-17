@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "test:unit": "node --test test/*.test.js"
+    "test:unit": "node --test test/*.test.js",
+    "reintentar-fallidos": "node scripts/reintentar-fallidos.js"
   },
   "author": "edsaana",
   "license": "ISC",

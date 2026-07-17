@@ -1,5 +1,25 @@
 const tutoriaService = require('../../domain/services/tutoria.service');
 
+// DTO de respuesta pública (E2): tutoriaService/el repository devuelven la fila cruda de Postgres
+// (columnas en minúscula por el RETURNING * sobre columnas sin comillas, más la columna interna
+// `error` pensada para diagnóstico). Mapeamos explícitamente a los campos de contrato público en
+// camelCase -- igual que el body de la solicitud -- y solo incluimos el motivo de una falla cuando
+// corresponde, en vez de un `error: null` confuso en el camino feliz.
+const toTutoriaResponse = (tutoria) => {
+    const dto = {
+        idTutoria: tutoria.idtutoria,
+        idEstudiante: tutoria.idestudiante,
+        idTutor: tutoria.idtutor,
+        fecha: tutoria.fecha,
+        materia: tutoria.materia,
+        estado: tutoria.estado
+    };
+    if (tutoria.estado === 'FALLIDA' && tutoria.error) {
+        dto.motivoFallo = tutoria.error;
+    }
+    return dto;
+};
+
 const postSolicitud = async (req, res, next) => {
     try {
         // ================== INICIO DE CAMBIOS ==================
@@ -9,14 +29,14 @@ const postSolicitud = async (req, res, next) => {
         // otra validación.
         const idempotencyKey = req.header('Idempotency-Key');
         if (!idempotencyKey) {
-            throw { statusCode: 400, message: 'El header Idempotency-Key es obligatorio para solicitar una tutoría.' };
+            throw Object.assign(new Error('El header Idempotency-Key es obligatorio para solicitar una tutoría.'), { statusCode: 400 });
         }
 
         // 1. VERIFICACIÓN DE ROL (AUTORIZACIÓN)
         // El objeto req.user fue añadido por nuestro middleware jwt.middleware.js
         if (req.user.role !== 'student') {
             // Si el usuario no es un estudiante (ej. es un tutor), denegamos la acción.
-            throw { statusCode: 403, message: 'Acción no permitida. Solo los estudiantes pueden solicitar tutorías.' };
+            throw Object.assign(new Error('Acción no permitida. Solo los estudiantes pueden solicitar tutorías.'), { statusCode: 403 });
         }
 
         // 2. FORZAR LA IDENTIDAD (INTEGRIDAD)
@@ -40,7 +60,11 @@ const postSolicitud = async (req, res, next) => {
         
         // =================== FIN DE CAMBIOS ===================
 
-        res.status(201).json(resultado);
+        // E1: si la Idempotency-Key corresponde a una tutoría que ya quedó FALLIDA, este request no
+        // "creó" nada -- responder 201 ahí decía "creado con éxito" sobre un recurso que en
+        // realidad falló. 409 refleja que el estado actual del recurso es un conflicto terminal.
+        const statusCode = resultado.estado === 'FALLIDA' ? 409 : 201;
+        res.status(statusCode).json(toTutoriaResponse(resultado));
     } catch (error) {
         next(error);
     }
