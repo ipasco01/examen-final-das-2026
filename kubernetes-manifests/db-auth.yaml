@@ -1,0 +1,85 @@
+# kubernetes-manifests/db-auth.yaml
+#
+# Equipo 5 (Deployment) — issue "Datos y broker dentro del despliegue": antes de este cambio,
+# Kubernetes solo tenía los microservicios; las bases de datos vivían únicamente en Docker
+# Compose, así que ningún pod podía llegar a Ready. StatefulSet (no Deployment) porque una base
+# de datos guarda estado: necesita identidad estable y almacenamiento que sobreviva reinicios
+# (volumeClaimTemplates). La contraseña viene del Secret app-runtime-secrets, que NO se versiona
+# (ver app-runtime-secrets.example.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-auth-service # DNS interno; coincide con DB_HOST en ms-auth.yaml
+spec:
+  selector:
+    app: db-auth
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db-auth
+spec:
+  serviceName: db-auth-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-auth
+  template:
+    metadata:
+      labels:
+        app: db-auth
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:14-alpine # Misma versión fijada que en docker-compose.yml
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "user_auth"
+            - name: POSTGRES_DB
+              value: "db_auth"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: AUTH_DB_PASSWORD
+            # Subdirectorio para los datos: evita el conflicto de Postgres con la carpeta
+            # lost+found que algunos provisionadores crean en la raíz del volumen.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "user_auth", "-d", "db_auth"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "user_auth", "-d", "db_auth"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: db-auth-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: db-auth-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

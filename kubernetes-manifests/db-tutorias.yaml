@@ -1,0 +1,81 @@
+# kubernetes-manifests/db-tutorias.yaml
+#
+# Equipo 5 (Deployment) — issue "Datos y broker dentro del despliegue". Ver el comentario
+# completo del patrón en db-auth.yaml: StatefulSet + volumen persistente + contraseña desde el
+# Secret app-runtime-secrets (no versionado). Esta base guarda además las tablas de outbox y
+# compensaciones del Equipo 1: su persistencia protege la saga.
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-tutorias-service # DNS interno; coincide con DB_HOST en ms-tutorias.yaml
+spec:
+  selector:
+    app: db-tutorias
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db-tutorias
+spec:
+  serviceName: db-tutorias-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-tutorias
+  template:
+    metadata:
+      labels:
+        app: db-tutorias
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:14-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "user_tutorias"
+            - name: POSTGRES_DB
+              value: "db_tutorias"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: TUTORIAS_DB_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "user_tutorias", "-d", "db_tutorias"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "user_tutorias", "-d", "db_tutorias"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: db-tutorias-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: db-tutorias-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
