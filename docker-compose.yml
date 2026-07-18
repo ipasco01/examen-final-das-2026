@@ -1,9 +1,18 @@
 # docker-compose.yml
+#
+# Cambios del Equipo 5 (Deployment) — issue "Arranque ordenado y auto-recuperación":
+#   - restart: unless-stopped en todos los servicios (auto-recuperación ante caídas).
+#   - healthcheck en las 4 bases de datos y RabbitMQ.
+#   - depends_on con condition: service_healthy para eliminar la carrera de arranque.
+#   - Imágenes de Prometheus y Grafana fijadas a versión (reproducibilidad; eran :latest).
+#   - Sincronización de variables (drift): ms-auth recibía cero variables de BD (su db.js caía a
+#     localhost) y ms-usuarios/ms-agenda validan JWT en su middleware pero no recibían JWT_SECRET.
 
 services:
   # --- Servicio de Autenticación ---
   ms-auth:
     build: ./ms-auth
+    restart: unless-stopped
     ports:
       - "4000:4000" # Mapea el puerto 4000 de tu máquina al 4000 del contenedor
     environment:
@@ -11,10 +20,20 @@ services:
       - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
       - JWT_EXPIRES_IN=1h
       - SERVICE_NAME=MS_Auth
+      # --- VARIABLES PARA LA BD (Equipo 5: faltaban; db.js caía al default localhost) ---
+      - DB_HOST=db-auth
+      - DB_PORT=5432
+      - DB_USER=user_auth
+      - DB_PASSWORD=${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en tu .env raíz}
+      - DB_NAME=db_auth
+    depends_on:
+      db-auth:
+        condition: service_healthy
 
   # --- Servicio de Usuarios ---
   ms-usuarios:
     build: ./ms-usuarios
+    restart: unless-stopped
     ports:
       - "3001:3001"
     environment:
@@ -27,14 +46,20 @@ services:
       - DB_NAME=db_usuarios
       - SERVICE_NAME=MS_Usuarios
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
+      # Equipo 5: el middleware JWT agregado por el Equipo 3 necesita este secreto (config/index.js
+      # no define default para jwtSecret; sin esta variable, toda validación de token fallaría).
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
     depends_on:
-      # Asegura que la BD inicie antes que el servicio
-      - db-usuarios
-      - rabbitmq
+      # Espera a que la BD y el broker estén SANOS, no solo encendidos (elimina la carrera de arranque)
+      db-usuarios:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   # --- Servicio de Agenda ---
   ms-agenda:
     build: ./ms-agenda
+    restart: unless-stopped
     ports:
       - "3002:3002"
     environment:
@@ -47,15 +72,19 @@ services:
       - DB_NAME=db_agenda
       - SERVICE_NAME=MS_Agenda
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
+      # Equipo 5: mismo caso que ms-usuarios — el middleware JWT del Equipo 3 requiere el secreto.
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
     depends_on:
-      # Depende de su propia BD
-      - db-agenda
-      - rabbitmq
+      db-agenda:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   # --- Servicio de Message Broker ---
   rabbitmq:
     image: rabbitmq:3.13-management-alpine # Imagen con interfaz de gestión
     container_name: rabbitmq
+    restart: unless-stopped
     ports:
       - "5672:5672" # Puerto AMQP para los servicios
       - "15672:15672" # Puerto para la interfaz web de gestión
@@ -64,10 +93,17 @@ services:
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq/
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
 
   # --- Servicio de Notificaciones ---
   ms-notificaciones:
     build: ./ms-notificaciones
+    restart: unless-stopped
     ports:
       - "3003:3003"
     environment:
@@ -75,12 +111,14 @@ services:
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
       - SERVICE_NAME=MS_Notificaciones
     depends_on:
-      - rabbitmq # Asegura que RabbitMQ inicie antes que este servicio
+      rabbitmq:
+        condition: service_healthy # Espera a que RabbitMQ responda, no solo a que arranque
 
   # --- Proxy para Chaos Engineering ---
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.5.0
     container_name: toxiproxy
+    restart: unless-stopped
     command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
     ports:
       - "8474:8474" # API de control
@@ -88,11 +126,13 @@ services:
     volumes:
       - ./toxiproxy.json:/config/toxiproxy.json:ro
     depends_on:
-      - ms-usuarios
+      ms-usuarios:
+        condition: service_started
 
   # --- Servicio de Tutorías (El Orquestador) ---
   ms-tutorias:
     build: ./ms-tutorias
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
@@ -115,18 +155,26 @@ services:
       - SERVICE_NAME=MS_Tutorias
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
     depends_on:
-      - ms-auth
-      - ms-usuarios
-      - ms-agenda
-      - ms-notificaciones
-      - db-tutorias
-      - rabbitmq # Asegura que RabbitMQ inicie antes que este servicio
-      - toxiproxy # Permite enrutar ms-usuarios mediante el proxy de chaos
+      ms-auth:
+        condition: service_started
+      ms-usuarios:
+        condition: service_started
+      ms-agenda:
+        condition: service_started
+      ms-notificaciones:
+        condition: service_started
+      db-tutorias:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy # El broker sano antes de publicar eventos
+      toxiproxy:
+        condition: service_started # Permite enrutar ms-usuarios mediante el proxy de chaos
 
   # --- Cliente Web Interactivo ---
   client-sim:
     build: ./client-mobile-sim
     container_name: client_sim_web
+    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
@@ -135,25 +183,30 @@ services:
       - API_BASE_URL=http://ms-tutorias:3000
       - AUTH_SERVICE_URL=http://ms-auth:4000/auth
     depends_on:
-      - ms-auth
-      - ms-tutorias
+      ms-auth:
+        condition: service_started
+      ms-tutorias:
+        condition: service_started
 
   # --- Dashboard de Trazabilidad ---
   tracking-dashboard:
     build: ./tracking-dashboard
     container_name: tracking_dashboard
+    restart: unless-stopped
     ports:
       - "9000:9000"
     environment:
       - PORT=9000
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:?Definí RABBITMQ_DEFAULT_USER en tu .env raíz}:${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}@rabbitmq:5672
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
 
   # --- Servicio de Base de Datos PostgreSQL ---
   db-auth:
     image: postgres:14-alpine
     container_name: db_auth_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user_auth
       POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en tu .env raíz}
@@ -162,10 +215,17 @@ services:
       - "5435:5432" # Puerto propio para evitar conflicto con las demás BD (5432-5434)
     volumes:
       - postgres_data_auth:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_auth -d db_auth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   db-usuarios:
     image: postgres:14-alpine # Usamos una imagen oficial de PostgreSQL
     container_name: db_usuarios_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user_usuarios # Define el usuario de la BD
       POSTGRES_PASSWORD: ${USUARIOS_DB_PASSWORD:?Definí USUARIOS_DB_PASSWORD en tu .env raíz}
@@ -174,10 +234,17 @@ services:
       - "5432:5432" # Expone el puerto 5432 en el host y 5432 para el Postgres dentro del contenedor
     volumes:
       - postgres_data_usuarios:/var/lib/postgresql/data # Persiste los datos fuera del contenedor
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_usuarios -d db_usuarios"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   db-agenda:
     image: postgres:14-alpine
     container_name: db_agenda_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user_agenda
       POSTGRES_PASSWORD: ${AGENDA_DB_PASSWORD:?Definí AGENDA_DB_PASSWORD en tu .env raíz}
@@ -186,10 +253,17 @@ services:
       - "5433:5432" # Mapeamos al puerto 5433 en el host para evitar conflicto con db-usuarios (5432)
     volumes:
       - postgres_data_agenda:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_agenda -d db_agenda"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   db-tutorias:
     image: postgres:14-alpine
     container_name: db_tutorias_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user_tutorias
       POSTGRES_PASSWORD: ${TUTORIAS_DB_PASSWORD:?Definí TUTORIAS_DB_PASSWORD en tu .env raíz}
@@ -198,28 +272,40 @@ services:
       - "5434:5432" # Se mapea el puerto 5434 en el host para evitar conflicto con db-usuarios (5432)
     volumes:
       - postgres_data_tutorias:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_tutorias -d db_tutorias"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # --- MONITORIZACIÓN ---
   prometheus:
-    image: prom/prometheus:latest
+    # Equipo 5: versión fijada (era :latest, build no reproducible)
+    image: prom/prometheus:v2.53.0
     container_name: prometheus
+    restart: unless-stopped
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - ./alert_rules.yml:/etc/prometheus/alert_rules.yml
     ports:
       - "9091:9090"
     depends_on:
-      - ms-tutorias # Esperar a que al menos uno arranque
+      ms-tutorias:
+        condition: service_started # Esperar a que al menos uno arranque
 
   grafana:
-    image: grafana/grafana:latest
+    # Equipo 5: versión fijada (era :latest, build no reproducible)
+    image: grafana/grafana:11.1.0
     container_name: grafana
+    restart: unless-stopped
     ports:
       - "3005:3000" # Mapeamos al 3005 para no chocar con ms-tutorias (3000)
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Definí GRAFANA_ADMIN_PASSWORD en tu .env raíz}
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
 
 # --- Definición de Volúmenes ---
 volumes:
