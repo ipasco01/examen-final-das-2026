@@ -1,4 +1,9 @@
 # kubernetes-manifests/ms-notificaciones.yaml
+#
+# Equipo 5 (Deployment) — issue "K8s operable": probes, resources y RABBITMQ_URL sincronizada con
+# docker-compose.yml (drift corregido: sin esa variable el consumidor no puede conectarse al
+# broker). Probes sobre /metrics (express-prom-bundle); /health con dependencias es el siguiente
+# paso, coordinado con el Equipo 4.
 apiVersion: v1
 kind: Service
 metadata:
@@ -33,9 +38,34 @@ spec:
           image: edsaana/ms-notificaciones:1.0 # La imagen que publicaste
           ports:
             - containerPort: 3003
+          # --- Equipo 5: chequeos de salud ---
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 3003
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 3003
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          # --- Equipo 5: garantías de capacidad (base para HPA futuro) ---
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
           env:
             - name: PORT
               value: "3003"
+            - name: SERVICE_NAME
+              value: "MS_Notificaciones"
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -43,3 +73,11 @@ spec:
                   key: JWT_SECRET
             - name: JWT_EXPIRES_IN
               value: "1h"
+            # --- Equipo 5: broker sincronizado con el compose. El Service rabbitmq-service se
+            # crea en el issue 3; la URL con credenciales viene del Secret app-runtime-secrets
+            # (no versionado). ---
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: RABBITMQ_URL

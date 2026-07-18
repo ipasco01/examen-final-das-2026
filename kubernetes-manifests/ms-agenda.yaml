@@ -1,4 +1,9 @@
 # kubernetes-manifests/ms-agenda.yaml
+#
+# Equipo 5 (Deployment) — issue "K8s operable": probes, resources y variables de BD y broker
+# sincronizadas con docker-compose.yml (drift corregido: este manifiesto no tenía DB_* ni
+# RABBITMQ_URL). Probes sobre /metrics (express-prom-bundle); /health con dependencias es el
+# siguiente paso, coordinado con el Equipo 4.
 apiVersion: v1
 kind: Service
 metadata:
@@ -33,9 +38,34 @@ spec:
           image: edsaana/ms-agenda:1.0 # La imagen que publicaste
           ports:
             - containerPort: 3002
+          # --- Equipo 5: chequeos de salud ---
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 3002
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 3002
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          # --- Equipo 5: garantías de capacidad (base para HPA futuro) ---
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
           env:
             - name: PORT
               value: "3002"
+            - name: SERVICE_NAME
+              value: "MS_Agenda"
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -43,3 +73,24 @@ spec:
                   key: JWT_SECRET
             - name: JWT_EXPIRES_IN
               value: "1h"
+            # --- Equipo 5: BD y broker sincronizados con el compose. Los Services
+            # db-agenda-service y rabbitmq-service se crean en el issue 3; los valores
+            # sensibles vienen del Secret app-runtime-secrets (no versionado). ---
+            - name: DB_HOST
+              value: "db-agenda-service"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: "user_agenda"
+            - name: DB_NAME
+              value: "db_agenda"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: AGENDA_DB_PASSWORD
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: RABBITMQ_URL

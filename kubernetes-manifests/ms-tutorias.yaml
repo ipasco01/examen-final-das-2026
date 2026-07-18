@@ -1,4 +1,10 @@
 # kubernetes-manifests/ms-tutorias.yaml
+#
+# Equipo 5 (Deployment) — issue "K8s operable": probes, resources y variables de BD y broker
+# sincronizadas con docker-compose.yml (drift corregido: este manifiesto no tenía DB_* ni
+# RABBITMQ_URL, así que el servicio no podía conectarse a sus dependencias). Probes sobre
+# /metrics (express-prom-bundle); /health con dependencias es el siguiente paso con el Equipo 4.
+# Nota: en Kubernetes no hay Toxiproxy; ms-usuarios se llama directo por su Service.
 apiVersion: v1
 kind: Service
 metadata:
@@ -37,9 +43,34 @@ spec:
           image: edsaana/ms-tutorias:1.2
           ports:
             - containerPort: 3000
+          # --- Equipo 5: chequeos de salud ---
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          # --- Equipo 5: garantías de capacidad (base para HPA futuro) ---
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
           env:
             - name: PORT
               value: "3000"
+            - name: SERVICE_NAME
+              value: "MS_Tutorias"
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -54,3 +85,24 @@ spec:
               value: "http://ms-agenda-service:3002/agenda"
             - name: MS_NOTIFICACIONES_URL
               value: "http://ms-notificaciones-service:3003/notificaciones"
+            # --- Equipo 5: BD y broker sincronizados con el compose. Los Services
+            # db-tutorias-service y rabbitmq-service se crean en el issue 3; los valores
+            # sensibles vienen del Secret app-runtime-secrets (no versionado). ---
+            - name: DB_HOST
+              value: "db-tutorias-service"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: "user_tutorias"
+            - name: DB_NAME
+              value: "db_tutorias"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: TUTORIAS_DB_PASSWORD
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: RABBITMQ_URL
