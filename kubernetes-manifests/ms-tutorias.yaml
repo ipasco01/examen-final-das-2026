@@ -40,16 +40,33 @@ spec:
     spec:
       containers:
         - name: ms-tutorias
-          image: edsaana/ms-tutorias:1.2
+          image: ghcr.io/elcbas/ms-tutorias:bdb948c # Equipo 5: imagen construida desde ESTE repo (commit bdb948c)
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
           # --- Equipo 5: chequeos de salud ---
+          # NOTA (hallazgo de validacion): ms-tutorias es el UNICO servicio que, ademas del
+          # servidor HTTP, arranca tres procesos de fondo en app.js (messageProducer.connect,
+          # outboxPublisher.start, compensacionWorker.start). En la validacion local su /metrics
+          # tardo notablemente mas que el de los otros cuatro microservicios.
+          # Por eso aqui: (a) startupProbe que le da hasta 60s para terminar de arrancar sin que
+          # la liveness lo mate en loop, y (b) timeoutSeconds explicito en las tres sondas.
+          # Mejora pendiente (issue abierto): exponer un /health liviano propio, independiente del
+          # scrape de metricas, para no acoplar la disponibilidad del pod al endpoint de Prometheus.
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: 3000
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12   # 12 x 5s = hasta 60s de arranque tolerado
           readinessProbe:
             httpGet:
               path: /metrics
               port: 3000
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 3
             failureThreshold: 3
           livenessProbe:
             httpGet:
@@ -57,6 +74,7 @@ spec:
               port: 3000
             initialDelaySeconds: 30
             periodSeconds: 15
+            timeoutSeconds: 3
             failureThreshold: 3
           # --- Equipo 5: garantías de capacidad (base para HPA futuro) ---
           resources:

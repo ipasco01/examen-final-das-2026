@@ -35,7 +35,8 @@ spec:
     spec:
       containers:
         - name: ms-usuarios
-          image: edsaana/ms-usuarios:1.1 # La imagen que publicaste
+          image: ghcr.io/elcbas/ms-usuarios:bdb948c # Equipo 5: imagen construida desde ESTE repo (commit bdb948c)
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3001
           # --- Equipo 5: chequeos de salud ---

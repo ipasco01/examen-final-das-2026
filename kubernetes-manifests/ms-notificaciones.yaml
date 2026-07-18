@@ -35,7 +35,8 @@ spec:
     spec:
       containers:
         - name: ms-notificaciones
-          image: edsaana/ms-notificaciones:1.0 # La imagen que publicaste
+          image: ghcr.io/elcbas/ms-notificaciones:bdb948c # Equipo 5: imagen construida desde ESTE repo (commit bdb948c)
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3003
           # --- Equipo 5: chequeos de salud ---

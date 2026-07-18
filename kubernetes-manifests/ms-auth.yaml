@@ -35,7 +35,8 @@ spec:
     spec:
       containers:
         - name: ms-auth
-          image: edsaana/ms-auth:1.2 # La imagen que publicaste
+          image: ghcr.io/elcbas/ms-auth:bdb948c # Equipo 5: imagen construida desde ESTE repo (commit bdb948c)
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 4000
           # --- Equipo 5: chequeos de salud ---
