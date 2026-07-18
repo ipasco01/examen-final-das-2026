@@ -15,8 +15,8 @@ test('PENDIENTE no tiene orígenes válidos (es siempre el estado inicial)', () 
     assert.deepEqual(obtenerEstadosOrigenValidos(ESTADOS.PENDIENTE), []);
 });
 
-test('CANCELADA no tiene orígenes válidos (declarada en el CHECK, sin caller hoy)', () => {
-    assert.deepEqual(obtenerEstadosOrigenValidos(ESTADOS.CANCELADA), []);
+test('CANCELADA solo es alcanzable desde CONFIRMADA', () => {
+    assert.deepEqual(obtenerEstadosOrigenValidos(ESTADOS.CANCELADA), [ESTADOS.CONFIRMADA]);
 });
 
 test('un estado desconocido tampoco tiene orígenes válidos', () => {

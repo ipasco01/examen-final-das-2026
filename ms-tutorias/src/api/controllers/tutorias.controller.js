@@ -1,5 +1,36 @@
 const tutoriaService = require('../../domain/services/tutoria.service');
 
+// S5: sin esto, un duracionMinutos/materia/fechaSolicitada inválido se reenviaba tal cual a
+// ms-agenda o se persistía crudo (ej. "Tutoría de  confirmada" con materia vacía), y una
+// fechaSolicitada mal formada recién se descubría cuando Postgres rechazaba el INSERT -- después
+// de ya haber llamado a ms-agenda con el valor crudo en la URL. Mismo criterio que
+// ms-agenda/agenda.controller.js usa para validar fechaHora: chequeo imperativo en el controller,
+// sin librería nueva. Coincide además con los cuatro campos que swagger.yaml ya marca `required`
+// en SolicitudTutoriaRequest, hoy sin aplicar en código.
+//
+// Solo forma/tipo aquí -- deliberadamente NO valida que fechaSolicitada sea futura. Esta función
+// corre en todo request, incluidos los reintentos idempotentes (misma Idempotency-Key, mismo
+// body); si el reintento llega después de que la fecha originalmente solicitada ya pasó, la Saga
+// original de todos modos debe resolverse por el short-circuit de idempotencia, no rechazarse por
+// forma. La regla de negocio "debe ser futura" vive en tutoria.service.js, después de ese
+// short-circuit, donde solo aplica a una Saga genuinamente nueva.
+const validarSolicitud = (body) => {
+    const { idTutor, materia, duracionMinutos, fechaSolicitada } = body;
+
+    if (!idTutor || typeof idTutor !== 'string') {
+        throw Object.assign(new Error('El campo "idTutor" es obligatorio.'), { statusCode: 400 });
+    }
+    if (!materia || typeof materia !== 'string' || !materia.trim()) {
+        throw Object.assign(new Error('El campo "materia" es obligatorio y no puede estar vacío.'), { statusCode: 400 });
+    }
+    if (typeof duracionMinutos !== 'number' || !Number.isFinite(duracionMinutos) || duracionMinutos <= 0) {
+        throw Object.assign(new Error('El campo "duracionMinutos" debe ser un número positivo.'), { statusCode: 400 });
+    }
+    if (!fechaSolicitada || Number.isNaN(new Date(fechaSolicitada).getTime())) {
+        throw Object.assign(new Error('El campo "fechaSolicitada" debe ser una fecha válida en formato ISO 8601.'), { statusCode: 400 });
+    }
+};
+
 // DTO de respuesta pública (E2): tutoriaService/el repository devuelven la fila cruda de Postgres
 // (columnas en minúscula por el RETURNING * sobre columnas sin comillas, más la columna interna
 // `error` pensada para diagnóstico). Mapeamos explícitamente a los campos de contrato público en
@@ -10,6 +41,7 @@ const toTutoriaResponse = (tutoria) => {
         idTutoria: tutoria.idtutoria,
         idEstudiante: tutoria.idestudiante,
         idTutor: tutoria.idtutor,
+        tutorNombre: tutoria.nombretutor || null,
         fecha: tutoria.fecha,
         materia: tutoria.materia,
         estado: tutoria.estado
@@ -38,6 +70,9 @@ const postSolicitud = async (req, res, next) => {
             // Si el usuario no es un estudiante (ej. es un tutor), denegamos la acción.
             throw Object.assign(new Error('Acción no permitida. Solo los estudiantes pueden solicitar tutorías.'), { statusCode: 403 });
         }
+
+        // 1b. VALIDACIÓN DE CAMPOS (S5)
+        validarSolicitud(req.body);
 
         // 2. FORZAR LA IDENTIDAD (INTEGRIDAD)
         // Creamos un nuevo payload para el servicio que es 100% confiable.
@@ -70,4 +105,49 @@ const postSolicitud = async (req, res, next) => {
     }
 };
 
-module.exports = { postSolicitud };
+// S8: no existía forma de consultar el estado de una tutoría después de crearla (ej. una que
+// quedó PENDIENTE por una respuesta lenta de ms-agenda). No se distingue "no existe" de "no es
+// tuya" con un 403 aparte -- ambos casos responden 404, para no confirmarle a un estudiante
+// autenticado que un idTutoria ajeno existe.
+const getTutoriaPorId = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const tutoria = await tutoriaService.obtenerTutoriaPorId(id);
+
+        if (!tutoria || tutoria.idestudiante !== req.user.sub) {
+            throw Object.assign(new Error('Tutoría no encontrada.'), { statusCode: 404 });
+        }
+
+        res.status(200).json(toTutoriaResponse(tutoria));
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Listado de "mis tutorías" -- pedido explícito del usuario tras agregar getTutoriaPorId: consultar
+// una por id es poco útil desde un cliente si primero no sabés el id; esto es lo que realmente
+// sirve para mostrar en una pantalla de "mis tutorías". Alcance acotado al estudiante autenticado
+// (mismo criterio de ownership que postSolicitud/getTutoriaPorId), no a lo que el tutor tiene
+// asignado -- ms-tutorias no tiene hoy ningún camino tutor-facing.
+const getTutoriasDelEstudiante = async (req, res, next) => {
+    try {
+        const tutorias = await tutoriaService.listarTutoriasPorEstudiante(req.user.sub);
+        res.status(200).json(tutorias.map(toTutoriaResponse));
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Cancelación de una tutoría CONFIRMADA (pedido explícito del usuario, cierra el gap de CANCELADA
+// documentado en S11). Ownership acá también: 404 uniforme para "no existe" y "no es tuya".
+const cancelarTutoria = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const resultado = await tutoriaService.cancelarTutoria(id, req.user.sub, req.correlationId);
+        res.status(200).json(toTutoriaResponse(resultado));
+    } catch (error) {
+        next(error);
+    }
+};
+
+module.exports = { postSolicitud, getTutoriaPorId, getTutoriasDelEstudiante, cancelarTutoria };

@@ -154,13 +154,15 @@ CREATE TABLE tutorias (
     idTutoria UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     idEstudiante VARCHAR(50) NOT NULL,
     idTutor VARCHAR(50) NOT NULL,
+    nombreTutor VARCHAR(255),
     materia VARCHAR(255),
     fecha TIMESTAMPTZ NOT NULL,
     estado VARCHAR(50) NOT NULL CHECK (estado IN ('PENDIENTE', 'CONFIRMADA', 'FALLIDA', 'CANCELADA')),
     createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     error VARCHAR(500),
-    idempotencyKey VARCHAR(255) UNIQUE
+    idempotencyKey VARCHAR(255) UNIQUE,
+    idBloqueo UUID
 );
 
 CREATE INDEX idx_tutorias_idEstudiante ON tutorias(idEstudiante);
@@ -264,6 +266,17 @@ CREATE INDEX idx_compensaciones_pendientes_estado ON compensaciones_pendientes(e
 > );
 >
 > CREATE INDEX idx_compensaciones_pendientes_estado ON compensaciones_pendientes(estado);
+> ```
+
+> Cancelación de tutorías (`DELETE /v1/tutorias/:id`): para poder liberar el horario en `ms-agenda` al
+> cancelar, `ms-tutorias` necesita saber qué bloqueo corresponde a cada tutoría -- antes no se persistía en
+> ningún lado (solo vivía en memoria durante la Saga). `nombreTutor` es una denormalización del nombre ya
+> resuelto contra `ms-usuarios` en el paso 1 de la Saga, para no tener que volver a consultarlo en cada
+> lectura. Si `db_tutorias` ya existe de una instalación previa, aplicar manualmente:
+>
+> ```sql
+> ALTER TABLE tutorias ADD COLUMN idBloqueo UUID;
+> ALTER TABLE tutorias ADD COLUMN nombreTutor VARCHAR(255);
 > ```
 
 ## Verificar accesos

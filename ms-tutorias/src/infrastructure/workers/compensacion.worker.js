@@ -24,7 +24,8 @@ const runOnce = async ({ limit = COMPENSACION_PENDIENTE_BATCH_LIMIT } = {}) => {
     isRunning = true;
 
     try {
-        return await db.withTransaction(async (client) => {
+        // S6: pool reservado para workers de fondo, separado del que atiende el tráfico HTTP.
+        return await db.withWorkerTransaction(async (client) => {
             const pendientes = await compensacionRepository.reclamarPendientes(client, limit);
 
             let resueltos = 0;

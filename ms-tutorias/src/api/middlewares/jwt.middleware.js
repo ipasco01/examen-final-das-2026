@@ -17,7 +17,11 @@ const verifyToken = (req, res, next) => {
 
     try {
         // 3. Verificar el token usando el secreto
-        const decodedPayload = jwt.verify(token, config.jwtSecret);
+        // S9: fijar el algoritmo esperado explícitamente. Con la config actual (secreto en
+        // string, no un par de claves RS256) jwt.verify ya se limita a HS256/384/512 por defecto
+        // -- no es explotable hoy -- pero no fijarlo es depender de un comportamiento implícito de
+        // la librería en vez de una garantía explícita. Endurecimiento defensivo de costo cero.
+        const decodedPayload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
 
         // 4. Si el token es válido, adjuntar el payload al objeto request
         // para que los siguientes middlewares y controladores puedan usarlo.
