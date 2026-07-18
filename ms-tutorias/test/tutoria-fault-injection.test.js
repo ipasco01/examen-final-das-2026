@@ -22,7 +22,7 @@ const createRequest = ({ headerValue, idempotencyKey = 'idem-test-key' }) => ({
     body: {
         idEstudiante: 'student-from-body',
         idTutor: 'tutor-1',
-        fechaSolicitada: '2026-06-24T10:00:00.000Z',
+        fechaSolicitada: '2030-06-24T10:00:00.000Z',
         duracionMinutos: 60,
         materia: 'Arquitectura de Software'
     },

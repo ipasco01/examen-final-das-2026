@@ -2,8 +2,7 @@
 //
 // Máquina de estados explícita para la tutoría. Estados posibles según el CHECK de
 // `docs/setup-and-usage.md`: PENDIENTE, CONFIRMADA, FALLIDA, CANCELADA. Solo se declaran las
-// transiciones que el código realmente ejecuta hoy; CANCELADA queda reservada en el CHECK de la
-// base de datos pero sin ningún caller, así que deliberadamente no se le asignan transiciones.
+// transiciones que el código realmente ejecuta.
 
 const ESTADOS = {
     PENDIENTE: 'PENDIENTE',
@@ -13,7 +12,10 @@ const ESTADOS = {
 };
 
 const TRANSICIONES_VALIDAS = {
-    [ESTADOS.PENDIENTE]: [ESTADOS.CONFIRMADA, ESTADOS.FALLIDA]
+    [ESTADOS.PENDIENTE]: [ESTADOS.CONFIRMADA, ESTADOS.FALLIDA],
+    // Solo se puede cancelar una tutoría ya CONFIRMADA (tutoriaService#cancelarTutoria) -- una
+    // PENDIENTE huérfana ya tiene su propio camino de cierre (el worker de reconciliación).
+    [ESTADOS.CONFIRMADA]: [ESTADOS.CANCELADA]
 };
 
 // Estados desde los cuales es válido transicionar hacia `estadoDestino`. Un destino sin orígenes

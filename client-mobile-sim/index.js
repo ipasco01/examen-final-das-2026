@@ -3,6 +3,8 @@ require('dotenv').config(); // Cargar .env
 const express = require('express');
 const path = require('path');
 const { solicitar } = require('./src/scenarios/solicitarTutoria');
+const { listar } = require('./src/scenarios/listarTutorias');
+const { cancelar } = require('./src/scenarios/cancelarTutoria');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -30,6 +32,38 @@ app.post('/api/solicitar', async (req, res) => {
             res.status(error.response.status).json({ error: error.response.data.error || 'Error del backend' });
         } else {
             // Error interno del cliente (ej. fallo de login)
+            res.status(500).json({ error: { message: error.message } });
+        }
+    }
+});
+
+// Endpoint de API para listar las tutorías del estudiante autenticado ("ver mis tutorías")
+app.post('/api/tutorias/listar', async (req, res) => {
+    console.log(`[API] Recibida solicitud POST en /api/tutorias/listar`);
+    try {
+        const tutorias = await listar(req.body);
+        res.status(200).json(tutorias);
+    } catch (error) {
+        console.error(`[API] Error en /api/tutorias/listar: ${error.message}`);
+        if (error.response) {
+            res.status(error.response.status).json({ error: error.response.data.error || 'Error del backend' });
+        } else {
+            res.status(500).json({ error: { message: error.message } });
+        }
+    }
+});
+
+// Endpoint de API para cancelar una tutoría CONFIRMADA
+app.post('/api/tutorias/:id/cancelar', async (req, res) => {
+    console.log(`[API] Recibida solicitud POST en /api/tutorias/${req.params.id}/cancelar`);
+    try {
+        const resultado = await cancelar({ ...req.body, idTutoria: req.params.id });
+        res.status(200).json(resultado);
+    } catch (error) {
+        console.error(`[API] Error en /api/tutorias/${req.params.id}/cancelar: ${error.message}`);
+        if (error.response) {
+            res.status(error.response.status).json({ error: error.response.data.error || 'Error del backend' });
+        } else {
             res.status(500).json({ error: { message: error.message } });
         }
     }

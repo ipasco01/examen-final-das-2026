@@ -28,7 +28,7 @@ const save = async (tutoria, options = {}) => {
     console.log('[TutoriaRepository] save() recibió:', JSON.stringify(tutoria));
 
     // Desestructuramos los campos del objeto tutoria
-    const { idTutoria, idEstudiante, idTutor, fecha, materia, estado, error, idempotencyKey } = tutoria;
+    const { idTutoria, idEstudiante, idTutor, nombreTutor, fecha, materia, estado, error, idempotencyKey, idBloqueo } = tutoria;
 
     if (idTutoria) {
         // --- Lógica de UPDATE ---
@@ -41,9 +41,13 @@ const save = async (tutoria, options = {}) => {
         // Solo añadimos campos que realmente vienen en el objeto 'tutoria' para actualizar
         if (idEstudiante !== undefined) { fields.push(`idEstudiante = $${paramIndex++}`); values.push(idEstudiante); }
         if (idTutor !== undefined) { fields.push(`idTutor = $${paramIndex++}`); values.push(idTutor); }
+        if (nombreTutor !== undefined) { fields.push(`nombreTutor = $${paramIndex++}`); values.push(nombreTutor); }
         if (fecha !== undefined) { fields.push(`fecha = $${paramIndex++}`); values.push(fecha); }
         if (materia !== undefined) { fields.push(`materia = $${paramIndex++}`); values.push(materia); }
         if (estado !== undefined) { fields.push(`estado = $${paramIndex++}`); values.push(estado); }
+        // idBloqueo: se setea una sola vez, al confirmar la tutoría (bloquearAgenda ya devolvió un
+        // id). cancelarTutoria lo lee más tarde para saber qué bloqueo liberar en ms-agenda.
+        if (idBloqueo !== undefined) { fields.push(`idBloqueo = $${paramIndex++}`); values.push(idBloqueo); }
         // Manejamos el error explícitamente (puede ser null)
         fields.push(`error = $${paramIndex++}`); values.push(error === undefined ? null : error);
 
@@ -135,10 +139,10 @@ const save = async (tutoria, options = {}) => {
         // --- Lógica de INSERT ---
         console.log('[TutoriaRepository] Ejecutando INSERT');
         const queryText = `
-            INSERT INTO tutorias(idEstudiante, idTutor, fecha, materia, estado, error, idempotencyKey)
-            VALUES($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO tutorias(idEstudiante, idTutor, nombreTutor, fecha, materia, estado, error, idempotencyKey)
+            VALUES($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *`;
-        const insertValues = [idEstudiante, idTutor, fecha, materia, estado || 'PENDIENTE', error || null, idempotencyKey || null];
+        const insertValues = [idEstudiante, idTutor, nombreTutor || null, fecha, materia, estado || 'PENDIENTE', error || null, idempotencyKey || null];
 
         console.log(`[TutoriaRepository] INSERT Query: ${queryText}`);
         console.log(`[TutoriaRepository] INSERT Values: ${JSON.stringify(insertValues)}`);
@@ -190,4 +194,52 @@ const findByIdempotencyKey = async (idempotencyKey) => {
     }
 };
 
-module.exports = { save, findByIdempotencyKey };
+// S2: a diferencia del outbox y de compensaciones_pendientes, no hay ningún proceso que reclame
+// filas PENDIENTE huérfanas (el proceso murió a mitad de la Saga, antes de llegar al catch que
+// transiciona a FALLIDA). Un UPDATE...RETURNING atómico alcanza aquí -- no hace falta el patrón
+// SELECT...FOR UPDATE SKIP LOCKED de los otros workers porque no hay ningún side-effect adicional
+// por fila (no se inserta en otra tabla): dos instancias corriendo esto a la vez simplemente no se
+// pisan, porque en cuanto una fila deja de estar en PENDIENTE el WHERE de la otra deja de matchearla.
+const reconciliarPendientesViejas = async (fechaCorte, limit) => {
+    // Misma fuente de verdad que save(): solo se reconcilian filas cuyo estado actual es un origen
+    // válido para FALLIDA según la máquina de estados, en vez de hardcodear 'PENDIENTE' aquí.
+    const estadosOrigenValidos = obtenerEstadosOrigenValidos(ESTADOS.FALLIDA);
+    if (estadosOrigenValidos.length === 0) return [];
+
+    const queryText = `
+        UPDATE tutorias
+        SET estado = 'FALLIDA',
+            error = 'Reconciliación automática: la tutoría quedó PENDIENTE sin completar la Saga dentro del umbral esperado.',
+            updatedAt = CURRENT_TIMESTAMP
+        WHERE idTutoria IN (
+            SELECT idTutoria FROM tutorias
+            WHERE estado = ANY($1) AND createdAt < $2
+            ORDER BY createdAt ASC
+            LIMIT $3
+        )
+        RETURNING idTutoria, idTutor, idEstudiante, fecha, idempotencyKey`;
+
+    // S6: esta función solo la llama el worker de reconciliación (nunca el camino HTTP) -- usa el
+    // pool reservado para workers de fondo.
+    const res = await db.workerQuery(queryText, [estadosOrigenValidos, fechaCorte, limit]);
+    return res.rows;
+};
+
+// S8: soporte para GET /v1/tutorias/:id -- antes no existía ninguna forma de consultar el estado
+// de una tutoría después de crearla (ej. una que quedó PENDIENTE por una respuesta lenta).
+const findById = async (idTutoria) => {
+    const res = await db.query('SELECT * FROM tutorias WHERE idTutoria = $1', [idTutoria]);
+    return res.rows[0] || null;
+};
+
+// Listado de "mis tutorías" para GET /v1/tutorias -- más recientes primero, es lo que un cliente
+// esperaría ver arriba al abrir la lista.
+const findByEstudiante = async (idEstudiante) => {
+    const res = await db.query(
+        'SELECT * FROM tutorias WHERE idEstudiante = $1 ORDER BY createdAt DESC',
+        [idEstudiante]
+    );
+    return res.rows;
+};
+
+module.exports = { save, findByIdempotencyKey, reconciliarPendientesViejas, findById, findByEstudiante };

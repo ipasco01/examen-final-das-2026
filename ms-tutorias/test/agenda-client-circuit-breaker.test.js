@@ -6,6 +6,7 @@ const ROOT = path.resolve(__dirname, '..');
 
 const agendaClientPath = path.join(ROOT, 'src/infrastructure/clients/agenda.client.js');
 const messageProducerPath = path.join(ROOT, 'src/infrastructure/messaging/message.producer.js');
+const configPath = require.resolve(path.join(ROOT, 'src/config/index.js'));
 const axiosPath = require.resolve('axios');
 
 const clearModule = (filePath) => {
@@ -68,6 +69,16 @@ const loadAgendaClientWithStubs = () => {
             publishToQueue: async () => true,
             connect: async () => undefined
         }
+    };
+
+    // S4: config/index.js ahora falla rápido si falta alguna variable requerida (JWT_SECRET
+    // incluida) -- este test no depende de eso, así que se stubbea igual que los otros módulos en
+    // vez de depender de que el .env local del desarrollador tenga las tres variables completas.
+    require.cache[configPath] = {
+        id: configPath,
+        filename: configPath,
+        loaded: true,
+        exports: { agendaServiceUrl: 'http://localhost:3002/agenda' }
     };
 
     clearModule(agendaClientPath);

@@ -6,6 +6,7 @@
 const db = require('../../config/db');
 const messageProducer = require('./message.producer');
 const outboxRepository = require('../repositories/outbox.repository');
+const { outboxPublicacionTotal } = require('../observability/outbox.metrics');
 
 const NOTIFICACIONES_QUEUE = 'notificaciones_email_queue';
 const OUTBOX_MAX_INTENTOS = Number(process.env.OUTBOX_MAX_INTENTOS || 5);
@@ -24,7 +25,8 @@ const runOnce = async ({ limit = OUTBOX_BATCH_LIMIT } = {}) => {
     isRunning = true;
 
     try {
-        return await db.withTransaction(async (client) => {
+        // S6: pool reservado para workers de fondo, separado del que atiende el tráfico HTTP.
+        return await db.withWorkerTransaction(async (client) => {
             const pendientes = await outboxRepository.reclamarPendientes(client, limit);
 
             let publicados = 0;
@@ -35,6 +37,7 @@ const runOnce = async ({ limit = OUTBOX_BATCH_LIMIT } = {}) => {
 
                 if (publicoOk) {
                     await outboxRepository.marcarPublicado(client, fila.idoutbox);
+                    outboxPublicacionTotal.inc({ resultado: 'publicado' });
                     publicados += 1;
                 } else {
                     await outboxRepository.registrarIntentoFallido(
@@ -44,6 +47,7 @@ const runOnce = async ({ limit = OUTBOX_BATCH_LIMIT } = {}) => {
                         'publishToQueue devolvió false (canal RabbitMQ no disponible o error al publicar)',
                         OUTBOX_MAX_INTENTOS
                     );
+                    outboxPublicacionTotal.inc({ resultado: 'fallido' });
                     fallidos += 1;
                 }
             }
