@@ -15,7 +15,7 @@ services:
     # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
     # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
     # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
-    image: ghcr.io/elcbas/ms-auth:${IMAGE_TAG:-bdb948c}
+    image: ghcr.io/elcbas/ms-auth:${IMAGE_TAG:-0ab70dc}
     restart: unless-stopped
     ports:
       - "4000:4000" # Mapea el puerto 4000 de tu máquina al 4000 del contenedor
@@ -40,7 +40,7 @@ services:
     # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
     # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
     # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
-    image: ghcr.io/elcbas/ms-usuarios:${IMAGE_TAG:-bdb948c}
+    image: ghcr.io/elcbas/ms-usuarios:${IMAGE_TAG:-0ab70dc}
     restart: unless-stopped
     ports:
       - "3001:3001"
@@ -70,7 +70,7 @@ services:
     # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
     # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
     # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
-    image: ghcr.io/elcbas/ms-agenda:${IMAGE_TAG:-bdb948c}
+    image: ghcr.io/elcbas/ms-agenda:${IMAGE_TAG:-0ab70dc}
     restart: unless-stopped
     ports:
       - "3002:3002"
@@ -118,7 +118,7 @@ services:
     # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
     # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
     # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
-    image: ghcr.io/elcbas/ms-notificaciones:${IMAGE_TAG:-bdb948c}
+    image: ghcr.io/elcbas/ms-notificaciones:${IMAGE_TAG:-0ab70dc}
     restart: unless-stopped
     ports:
       - "3003:3003"
@@ -151,7 +151,7 @@ services:
     # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
     # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
     # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
-    image: ghcr.io/elcbas/ms-tutorias:${IMAGE_TAG:-bdb948c}
+    image: ghcr.io/elcbas/ms-tutorias:${IMAGE_TAG:-0ab70dc}
     restart: unless-stopped
     ports:
       - "3000:3000"

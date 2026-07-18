@@ -40,7 +40,7 @@ spec:
     spec:
       containers:
         - name: ms-tutorias
-          image: ghcr.io/elcbas/ms-tutorias:bdb948c # Equipo 5: imagen construida desde ESTE repo (commit bdb948c)
+          image: ghcr.io/elcbas/ms-tutorias:0ab70dc # Equipo 5: imagen construida desde ESTE repo (commit 0ab70dc)
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000

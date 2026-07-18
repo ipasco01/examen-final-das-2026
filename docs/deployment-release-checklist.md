@@ -3,7 +3,7 @@
 Qué debe existir y verificarse **antes** de dar por desplegado el sistema. Cada punto es
 verificable con un comando: si no se puede comprobar, no está hecho.
 
-Rama: `equipo5-deployment` · PR #8 · Imagen de referencia: commit `bdb948c`
+Rama: `equipo5-deployment` · PR #8 · Imagen de referencia: commit `0ab70dc`
 
 ---
 

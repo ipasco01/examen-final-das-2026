@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
         - name: ms-agenda
-          image: ghcr.io/elcbas/ms-agenda:bdb948c # Equipo 5: imagen construida desde ESTE repo (commit bdb948c)
+          image: ghcr.io/elcbas/ms-agenda:0ab70dc # Equipo 5: imagen construida desde ESTE repo (commit 0ab70dc)
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3002
