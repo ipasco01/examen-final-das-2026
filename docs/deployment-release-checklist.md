@@ -3,7 +3,11 @@
 Qué debe existir y verificarse **antes** de dar por desplegado el sistema. Cada punto es
 verificable con un comando: si no se puede comprobar, no está hecho.
 
-Rama: `equipo5-deployment` · PR #8 · Imagen de referencia: commit `0ab70dc`
+Rama: `equipo5-deployment` · PR #8 · Ultima verificacion completa: 19/07, 19 servicios en compose
+(15 con healthcheck) y 10 workloads en Kubernetes.
+
+La tag de imagen NO se fija en este documento a proposito: es `git rev-parse --short HEAD` del
+commit desplegado, y queda obsoleta en cuanto alguien commitea. Ver seccion 2.
 
 ---
 
@@ -32,6 +36,10 @@ Para rotarla hay que borrar el volumen (`docker compose down -v`) o crear el usu
 ## 1. Configuración
 
 - [ ] Existe `.env` en la raíz, copiado de `.env.example`, sin ningún valor `cambia-esta-password`.
+- [ ] Las 4 bases tienen su script en `docker/init/<base>/01-schema.sql`. Postgres los ejecuta
+      solo en la PRIMERA inicializacion del volumen: si la base ya existe, el script NO corre.
+      Para aplicarlo sobre una base existente:
+      `docker exec -i db_tutorias_postgres psql -U user_tutorias -d db_tutorias < docker/init/tutorias/01-schema.sql`
 - [ ] `.env` **no** está trackeado por git: `git check-ignore .env` devuelve `.env`.
 - [ ] Existe `kubernetes-manifests/app-runtime-secrets.yaml` (copiado de `examples/app-runtime-secrets.example.yaml`), con los
       **mismos valores** que el `.env`, y sin ningún `COMPLETAR`.
@@ -60,7 +68,7 @@ de publicarse.** Nunca `latest` en un manifiesto.
 ```powershell
 $env:IMAGE_TAG = git rev-parse --short HEAD
 docker compose up -d --build
-docker compose ps                                  # 15 servicios arriba
+docker compose ps                                  # 19 servicios arriba
 foreach ($p in 4000,3001,3002,3003,3000) { curl.exe -m 5 -f "http://localhost:$p/metrics" > $null; "$p -> $LASTEXITCODE" }
 ```
 
@@ -71,8 +79,10 @@ ms-notificaciones 3003, ms-tutorias 3000.
 
 ## 3. Docker Compose
 
-- [ ] Los 15 servicios levantan con un solo `docker compose up -d`.
-- [ ] Las 4 bases y RabbitMQ llegan a `healthy` (no solo `Up`).
+- [ ] Los 19 servicios levantan con un solo `docker compose up -d`.
+- [ ] 15 de los 19 servicios llegan a `healthy` (no solo `Up`). Los 4 restantes -- `toxiproxy`,
+      `tempo`, `otel-collector`, `promtail` -- usan imagenes distroless sin shell: no pueden
+      ejecutar un `CMD-SHELL`. Anotado como deuda #3, no como olvido.
 - [ ] Ningún servicio arranca antes que su dependencia (`condition: service_healthy`).
 - [ ] Un contenedor matado se recupera solo (`restart: unless-stopped`).
 - [ ] Ninguna imagen usa `latest`.

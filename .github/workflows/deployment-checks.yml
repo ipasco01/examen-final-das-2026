@@ -57,11 +57,32 @@ jobs:
           EOF
 
       - name: Ningun secreto real versionado
+        # Se busca lo contrario de lo intuitivo: un placeholder es SANO (significa que el valor
+        # real no esta en el repo). Lo que se bloquea es que aparezca un placeholder NUEVO en un
+        # manifiesto que no este en la lista de excepciones conocidas -- porque eso indica que
+        # alguien versiono un secreto a medias en vez de inyectarlo en el cluster.
+        #
+        # Excepcion conocida y aceptada: kong-security.yaml (Equipo 3) trae
+        # CHANGE_ME_WITH_APP_JWT_SECRET a proposito. Se reemplaza en el cluster despues del apply
+        # masivo, ver seccion 4 de docs/deployment-release-checklist.md. Esta anotado como deuda
+        # en docs/api-security-controls.md: el secreto deberia gestionarse fuera del repo.
         run: |
-          if grep -rn "CHANGE_ME\|COMPLETAR" kubernetes-manifests/*.yaml | grep -v examples/; then
-            echo "::error::Hay placeholders de secreto en manifiestos aplicables."
+          hallazgos=$(grep -rln "CHANGE_ME\|COMPLETAR" kubernetes-manifests/*.yaml \
+                      | grep -v "kong-security.yaml" || true)
+          if [ -n "$hallazgos" ]; then
+            echo "::error::Placeholders de secreto fuera de la lista de excepciones: $hallazgos"
             exit 1
           fi
+          echo "OK: solo la excepcion documentada (kong-security.yaml)"
+
+      - name: Ningun secreto REAL con valor en el repo
+        # El chequeo que de verdad importa: que no se cuele un .env o el Secret real de runtime.
+        run: |
+          if git ls-files | grep -E "(^|/)\.env$|app-runtime-secrets\.yaml$"; then
+            echo "::error::Hay un archivo de secretos versionado."
+            exit 1
+          fi
+          echo "OK: ningun archivo de secretos trackeado"
 
   k8s-lint:
     name: Politica de despliegue (Kubernetes)
