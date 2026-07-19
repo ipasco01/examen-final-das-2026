@@ -80,35 +80,60 @@ ms-notificaciones 3003, ms-tutorias 3000.
 ## 3. Docker Compose
 
 - [ ] Los 19 servicios levantan con un solo `docker compose up -d`.
-- [ ] **17 de los 19** servicios llegan a `healthy` (no solo `Up`). Los 2 restantes --
-      `toxiproxy` y `otel-collector` -- no tienen shell en su imagen: **comprobado**, no supuesto.
+- [ ] **18 de los 19** servicios llegan a `healthy` (no solo `Up`). El unico restante es
+      `otel-collector`, y la razon esta comprobada y tiene dueño.
 
-**Correccion del 19/07 (la encontro la auditoria cruzada, no yo).** Este documento afirmaba que 4
-servicios no podian tener healthcheck "porque usan imagenes distroless sin shell". Eso se asumio;
-nunca se ejecuto un comando para verificarlo. Al comprobarlo, era falso en la mitad de los casos:
+**Correccion del 19/07 — dos rondas, las dos las provoco la revision cruzada.**
 
-| Servicio | Comprobacion | Resultado |
+Este documento afirmaba primero que 4 servicios "no podian tener healthcheck porque usan imagenes
+distroless sin shell". Nunca se ejecuto un comando para verificarlo. Al hacerlo, la afirmacion
+resulto falsa para 3 de los 4:
+
+| Servicio | Que se comprobo | Solucion aplicada |
 |---|---|---|
-| `toxiproxy` | `docker run --entrypoint sh` | `exec: "sh": not found` -> sin shell, justificado |
-| `otel-collector` | idem | sin shell, justificado |
-| `tempo` | `command -v wget` | **`/usr/bin/wget`** -> healthcheck sobre `/ready` |
-| `promtail` | `command -v wget/curl/nc` -> ninguno; `bash` + `/dev/tcp` -> **disponibles** | healthcheck via socket TCP al puerto 9080 |
+| `tempo` | Tiene shell y `/usr/bin/wget` | `wget /ready` |
+| `promtail` | Sin `wget`/`curl`/`nc`, pero con `bash` + `/dev/tcp` | socket TCP al 9080 |
+| `toxiproxy` | Sin shell, pero **con su propio cliente** `/toxiproxy-cli` | `CMD` (no `CMD-SHELL`) sobre `toxiproxy-cli list` |
+| `otel-collector` | Sin shell y sin cliente propio utilizable | Pendiente, ver abajo |
 
-Es exactamente el error que este documento le seniala a los otros equipos: **dar por cierto lo que
-no se ejecuto.** Cometido por mi, en el documento donde acuso a los demas de cometerlo, y detectado
-por la revision cruzada al pedir la evidencia. Es la mejor demostracion de para que sirve esa
-revision: atrapa lo que el autor no puede ver de si mismo.
+**La segunda correccion fue la mas instructiva.** Tras arreglar `tempo` y `promtail`, este
+documento seguia diciendo que `toxiproxy` no podia tener healthcheck "por falta de shell". Eso era
+verdad a medias: la conclusion correcta era **"no puede con `CMD-SHELL`"**. Docker ofrece tambien
+`CMD`, que ejecuta un binario directo sin shell -- y la imagen trae `/toxiproxy-cli`. La opcion
+estuvo siempre disponible; el error fue generalizar una limitacion real (`wget` no existe) a una
+conclusion mas amplia de lo que los datos permitian.
 
-**Metodo para el que quiera repetirlo** (antes de declarar que algo "no se puede"):
+Este chequeo ademas es **mejor** que el de un socket TCP: `toxiproxy-cli list` no solo confirma que
+el puerto 8474 escucha, sino que la API de administracion responde y devuelve la configuracion de
+proxies.
 
-```bash
-docker run --rm --entrypoint sh <imagen> -c "command -v wget curl nc"   # herramientas HTTP
-docker run --rm --entrypoint bash <imagen> -c "exec 3<>/dev/tcp/1.1.1.1/80"   # socket nativo
+**El unico pendiente real: `otel-collector`.** Sin shell y sin un cliente propio que sirva para
+consultarse a si mismo. La solucion existe pero **no esta en mi zona**: el collector trae la
+extension `health_check`, que expone un endpoint en el puerto 13133 y hay que activarla en
+`otel-collector-config.yaml`:
+
+```yaml
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+service:
+  extensions: [health_check]
 ```
 
-Para los 2 que realmente no tienen shell, la deuda #3 propone habilitar el endpoint de salud propio
-del servicio: el collector trae la extension `health_check` (puerto 13133), hoy no activada en
-`otel-collector-config.yaml`. Eso es zona del Equipo 4.
+Ese archivo define el pipeline de observabilidad del Equipo 4. Modificarlo sin acordar con ellos
+seria cambiar como funciona su servicio. Aqui el "es de otro equipo" si corresponde -- a diferencia
+de `toxiproxy`, donde me escude en eso indebidamente: el healthcheck es politica de despliegue, o
+sea mi zona, aunque la herramienta la use el Equipo 1 para inyectar fallos.
+
+**Metodo, en orden, antes de declarar que algo "no se puede":**
+
+```bash
+docker run --rm --entrypoint sh   <imagen> -c "command -v wget curl nc"   # 1. herramientas HTTP
+docker run --rm --entrypoint bash <imagen> -c "exec 3<>/dev/tcp/1.1.1.1/80"  # 2. socket nativo
+docker run --rm --entrypoint <cliente-propio> <imagen> <subcomando>       # 3. binarios de la imagen
+```
+
+El paso 3 es el que se salteo dos veces. Casi toda imagen de servidor trae su propio cliente.
 - [ ] Ningún servicio arranca antes que su dependencia (`condition: service_healthy`).
 - [ ] Un contenedor matado se recupera solo (`restart: unless-stopped`).
 - [ ] Ninguna imagen usa `latest`.

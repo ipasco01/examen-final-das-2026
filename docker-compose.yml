@@ -168,6 +168,20 @@ services:
 
   # --- Proxy para Chaos Engineering ---
   toxiproxy:
+    # Equipo 5: healthcheck con CMD (no CMD-SHELL). La imagen no tiene shell, pero SI trae su
+    # propio cliente: /toxiproxy-cli. CMD ejecuta el binario directo, sin pasar por un shell.
+    # Comprobado:  docker exec toxiproxy /toxiproxy-cli list  -> lista los proxies, exit 0
+    # Es mejor que un chequeo de socket: no solo confirma que el puerto 8474 escucha, sino que
+    # la API de administracion responde y devuelve la configuracion de proxies.
+    # Correccion honesta: antes se documento que este servicio 'no podia' tener healthcheck por
+    # falta de shell. La conclusion correcta era 'no puede con CMD-SHELL'; CMD siempre estuvo
+    # disponible y no se evaluo.
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     image: ghcr.io/shopify/toxiproxy:2.5.0
     container_name: toxiproxy
     restart: unless-stopped
