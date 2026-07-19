@@ -33,10 +33,23 @@ spec:
       labels:
         app: ms-notificaciones # Etiqueta que el Service usa para encontrar este Pod
     spec:
+      # Equipo 5 (D4 de la auditoria, mitad Kubernetes): el USER del Dockerfile es una
+      # preferencia de la imagen; securityContext es la garantia del cluster. Sin runAsNonRoot,
+      # una imagen que por descuido vuelva a root corre como root y nadie se entera.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000          # usuario 'node', ya existe en node:*-alpine
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
         - name: ms-notificaciones
           image: ghcr.io/elcbas/ms-notificaciones:0ab70dc # Equipo 5: imagen construida desde ESTE repo (commit 0ab70dc)
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]     # la app solo abre un puerto > 1024: no necesita ninguna capability
+
           ports:
             - containerPort: 3003
           # --- Equipo 5: chequeos de salud ---

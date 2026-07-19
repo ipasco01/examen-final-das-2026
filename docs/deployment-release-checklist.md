@@ -166,13 +166,71 @@ python -c "import yaml;d=yaml.safe_load(open('docker-compose.yml'));print([n for
 
 ## Deuda abierta (backlog priorizado)
 
-| # | Pendiente | Atributo en riesgo |
-|---|---|---|
-| 0 | **Fijar `tempo` y `otel-collector` por digest** (hoy en `:latest`). Comando: `docker image inspect grafana/tempo:latest --format "{{index .RepoDigests 0}}"`. No se fijo a ciegas: elegir una version sin verificar que la imagen levante seria un cambio sin validacion | Reproducibilidad |
-| 1 | Paridad compose ↔ K8s: compose tiene **17** servicios, K8s cubre 10. Faltan `prometheus`, `grafana`, `toxiproxy`, `client-sim`, `tracking-dashboard`, y ahora tambien `tempo` y `otel-collector` | Observabilidad |
-| 2 | CI que valide `docker compose config` y `kubectl apply --dry-run` en cada PR | Reproducibilidad |
-| 3 | `/health` propio en ms-tutorias, separado de `/metrics` (hoy la probe depende del endpoint de Prometheus, y ese servicio corre 3 workers de fondo) | Disponibilidad |
-| 4 | ConfigMap para la configuración no secreta (hoy duplicada en cada Deployment) | Reproducibilidad |
-| 5 | NetworkPolicy: hoy cualquier pod alcanza cualquier base | Seguridad |
-| 6 | StorageClass explícita en los PVC (hoy dependen de la default del clúster) | Portabilidad |
-| 7 | Réplicas > 1 + PodDisruptionBudget | Disponibilidad |
+Actualizado 19/07 tras la auditoria cruzada. Lo que estaba abierto el 18/07 y ya se cerro:
+imagenes propias por tag de commit, tempo/otel fijados por digest, esquema de BD versionado en
+`docker/init/`, healthchecks en 15 de 19 servicios, HPA + PDB, securityContext, USER no-root y
+HEALTHCHECK en los Dockerfiles, y el workflow de CI.
+
+| # | Pendiente | Atributo en riesgo | Duenio |
+|---|---|---|---|
+| 1 | **Paridad compose ↔ K8s**: compose tiene 19 servicios, K8s cubre 10. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
+| 2 | **`/health` propio en los microservicios**, separado de `/metrics`. Hoy las probes apuntan a `/metrics`, y desde que el Equipo 4 agrego Gauges con `collect()` que consultan la BD, un problema en Postgres hace que Kubernetes reinicie los pods de aplicacion: un fallo de la capa de datos se propaga a la de computo | Disponibilidad | Equipo 5 + Equipo 4 |
+| 3 | **Healthcheck en `toxiproxy`, `tempo`, `otel-collector`, `promtail`**. Usan imagenes distroless sin shell ni `wget`, asi que un `CMD-SHELL` los marcaria unhealthy sin estarlo. Para el collector hace falta habilitar la extension `health_check` en `otel-collector-config.yaml` (puerto 13133); para Tempo, exponer `/ready` con un binario capaz de consultarlo | Disponibilidad | Equipo 4 |
+| 4 | **ConfigMap** para la configuracion no secreta, hoy duplicada inline en cada Deployment | Reproducibilidad | Equipo 5 |
+| 5 | **NetworkPolicy**: cualquier pod alcanza cualquier base | Seguridad | Equipo 5 + Equipo 3 |
+| 6 | **StorageClass explicita** en los `volumeClaimTemplates` (hoy dependen de la default del cluster) | Portabilidad | Equipo 5 |
+| 7 | **Topologia de RabbitMQ declarativa** (`definitions.json`). Hoy exchanges, colas y DLQ nacen de los `assertExchange`/`assertQueue` del codigo: la topologia depende de que servicio arranque primero y con que version | Confiabilidad | Equipo 2 |
+| 8 | **Instrumentacion OTel en los microservicios**. Tempo y el collector corren sanos pero ningun servicio exporta trazas: falta el SDK y `OTEL_EXPORTER_OTLP_ENDPOINT`. Verificable: `grep -h opentelemetry ms-*/package.json` no devuelve nada | Observabilidad | Equipo 4 |
+| 9 | **Provisioning de Grafana y Alertmanager**. Las reglas de `alert_rules.yml` se evaluan pero no hay destinatario configurado: una alerta que nadie recibe da sensacion de cobertura sin darla | Observabilidad | Equipo 4 |
+| 10 | **Separar los workers del proceso HTTP en ms-tutorias**. Cada replica agrega otra copia de los tres pollers compitiendo por las mismas filas; por eso su HPA tiene `maxReplicas: 2` mientras el resto tiene 4 | Escalabilidad | Equipo 1 + Equipo 5 |
+
+---
+
+## 6. Autoescalado y disponibilidad (D3)
+
+`kubernetes-manifests/autoscaling.yaml` define HPA (CPU al 70% de `requests`) y PodDisruptionBudget
+para los 5 microservicios.
+
+**Dependencia declarada:** el HPA necesita `metrics-server`, que Docker Desktop no instala. Sin el,
+los HPA quedan en `TARGETS <unknown>` y no escalan.
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch deployment metrics-server -n kube-system --type=json \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+kubectl top pods     # debe devolver CPU/memoria
+kubectl get hpa      # TARGETS con porcentaje, no <unknown>
+```
+
+- [ ] `kubectl top pods` responde (metrics-server operativo).
+- [ ] `kubectl get hpa` muestra porcentajes reales.
+- [ ] `kubectl get pdb` muestra los 5 presupuestos.
+
+⚠️ Con un Deployment en 1 replica, un PDB de `minAvailable: 1` **impide el drenaje voluntario del
+nodo**: `kubectl drain` espera indefinidamente porque evacuar el unico pod violaria el presupuesto.
+Es correcto en produccion (donde el HPA mantiene >= 2). En el cluster local, para drenar:
+`kubectl drain <nodo> --disable-eviction`.
+
+---
+
+## 7. Endurecimiento (D4)
+
+Dos mitades del mismo control, y hacen falta las dos:
+
+- **Dockerfile** (`USER node`, uid 1000): la imagen declara con que usuario corre. Aplica tambien
+  a quien la ejecute con `docker run`, sin compose ni cluster.
+- **`securityContext` del Pod** (`runAsNonRoot`, `allowPrivilegeEscalation: false`,
+  `capabilities: drop ALL`): el cluster lo **impone**. Sin esto, una imagen que por descuido
+  vuelva a root corre como root y nadie se entera.
+
+En las bases y el broker el `securityContext` es mas conservador: no se fuerza `runAsUser` porque
+las imagenes de Postgres y RabbitMQ gestionan su propio uid y el volumen ya tiene los permisos de
+ese uid; forzar otro rompe el arranque. Se quitan escalada de privilegios y capabilities.
+
+```bash
+kubectl get pod <pod> -o jsonpath='{.spec.securityContext}'   # runAsNonRoot: true
+docker inspect ghcr.io/elcbas/ms-auth:<tag> --format '{{.Config.User}}'   # node
+```
+
+---
+

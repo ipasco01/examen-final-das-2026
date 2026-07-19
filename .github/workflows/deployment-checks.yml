@@ -1,0 +1,132 @@
+# .github/workflows/deployment-checks.yml
+#
+# Equipo 5 (Deployment) — D6 de la auditoría.
+#
+# Por qué existe, con evidencia y no por buenas intenciones. Tres veces en 48 horas entró a la
+# rama principal algo que este workflow habría bloqueado:
+#
+#   18/07 — tempo y otel-collector entraron sin `restart` y con `:latest`, reintroduciendo dos
+#           deudas que este mismo PR ya había cerrado.
+#   19/07 — ms-tutorias quedó en CrashLoopBackOff: el export de publishTrackingEvent apuntaba a
+#           una función comentada. El PR se revisó y se aprobó; nadie ejecutó el código.
+#   19/07 — las 4 bases no tenían script de inicialización: el esquema solo existía como texto
+#           para copiar y pegar de un .md, así que el sistema no se podía levantar desde cero.
+#
+# Ninguno se detecta leyendo un diff. Los tres aparecen al ejecutar. Este workflow ejecuta.
+
+name: Deployment checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  compose-lint:
+    name: Politica de despliegue (compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker compose config es valido
+        # Valida sintaxis e interpolación sin levantar nada. Las variables se rellenan con el
+        # .env.example para que las guardas ${VAR:?} no aborten el chequeo.
+        run: |
+          cp .env.example .env
+          docker compose config > /dev/null
+
+      - name: Ninguna imagen usa :latest
+        # Una tag flotante hace que dos personas con el mismo commit corran binarios distintos.
+        run: |
+          if docker compose config | grep -E "image:.*:latest"; then
+            echo "::error::Hay imagenes con :latest. Fijar por version o por digest."
+            exit 1
+          fi
+
+      - name: Todo servicio declara restart
+        # Sin politica de reinicio, un proceso que muere deja el contenedor caido en silencio.
+        run: |
+          python3 - <<'EOF'
+          import yaml, sys
+          servicios = yaml.safe_load(open('docker-compose.yml'))['services']
+          faltan = [n for n, s in servicios.items() if 'restart' not in s]
+          if faltan:
+              print(f"::error::Servicios sin 'restart': {', '.join(faltan)}")
+              sys.exit(1)
+          print(f"OK: {len(servicios)} servicios, todos con restart")
+          EOF
+
+      - name: Ningun secreto real versionado
+        run: |
+          if grep -rn "CHANGE_ME\|COMPLETAR" kubernetes-manifests/*.yaml | grep -v examples/; then
+            echo "::error::Hay placeholders de secreto en manifiestos aplicables."
+            exit 1
+          fi
+
+  k8s-lint:
+    name: Politica de despliegue (Kubernetes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Manifiestos parsean y cumplen la politica minima
+        # No se usa 'kubectl apply --dry-run=server' porque requiere un cluster. La validacion
+        # estructural alcanza para lo que falla en la practica: probes, resources y :latest.
+        run: |
+          python3 - <<'EOF'
+          import yaml, glob, sys
+          errores = []
+          for f in glob.glob('kubernetes-manifests/*.yaml'):
+              for doc in yaml.safe_load_all(open(f)):
+                  if not doc or doc.get('kind') not in ('Deployment', 'StatefulSet'):
+                      continue
+                  nombre = doc['metadata']['name']
+                  for c in doc['spec']['template']['spec']['containers']:
+                      if str(c.get('image', '')).endswith(':latest'):
+                          errores.append(f"{nombre}: imagen con :latest")
+                      for campo in ('readinessProbe', 'livenessProbe', 'resources'):
+                          if campo not in c:
+                              errores.append(f"{nombre}: falta {campo}")
+          if errores:
+              for e in errores:
+                  print(f"::error::{e}")
+              sys.exit(1)
+          print("OK: todos los workloads tienen probes, resources y version fijada")
+          EOF
+
+  arranque-real:
+    name: El stack levanta y responde
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Levantar bases, broker y microservicios
+        # Este es el chequeo que habria evitado el CrashLoopBackOff del 19/07: construye las
+        # imagenes desde el codigo del PR y las ejecuta de verdad.
+        run: |
+          cp .env.example .env
+          docker compose up -d --build \
+            db-auth db-usuarios db-agenda db-tutorias rabbitmq \
+            ms-auth ms-usuarios ms-agenda ms-notificaciones ms-tutorias
+
+      - name: Cada microservicio responde /metrics
+        run: |
+          sleep 45
+          fallos=0
+          for p in 4000 3001 3002 3003 3000; do
+            if curl -fsS -m 10 "http://localhost:$p/metrics" > /dev/null; then
+              echo "puerto $p OK"
+            else
+              echo "::error::el servicio en el puerto $p no responde /metrics"
+              fallos=1
+            fi
+          done
+          exit $fallos
+
+      - name: Diagnostico si algo fallo
+        if: failure()
+        run: docker compose ps && docker compose logs --tail 50
+
+      - name: Limpieza
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,198 @@
+# kubernetes-manifests/autoscaling.yaml
+#
+# Equipo 5 (Deployment) — D3 de la auditoría: HorizontalPodAutoscaler + PodDisruptionBudget.
+#
+# DEPENDENCIA DECLARADA: el HPA necesita metrics-server corriendo en el clúster para leer el uso
+# de CPU. Docker Desktop NO lo trae instalado. Sin él los HPA quedan con TARGETS <unknown> y no
+# escalan. Instalación en el clúster local:
+#
+#   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#   kubectl patch deployment metrics-server -n kube-system --type=json \
+#     -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+#
+# El patch es necesario porque los kubelets de Docker Desktop usan certificados autofirmados que
+# metrics-server rechaza por defecto. En un clúster real ese flag NO va.
+#
+# Verificación: kubectl top pods   (debe devolver CPU/memoria, no un error)
+#               kubectl get hpa    (TARGETS debe mostrar un porcentaje, no <unknown>)
+#
+# Por qué el target es CPU y no requests/segundo: las requests por segundo requieren el adaptador
+# de métricas de Prometheus (prometheus-adapter), que a su vez depende de que la observabilidad
+# esté portada a Kubernetes -- hoy solo existe en compose. Se deja anotado como siguiente paso.
+#
+# Sobre el PodDisruptionBudget con minAvailable: 1 -- CUIDADO en el clúster local:
+# mientras un Deployment esté en 1 réplica, este PDB impide el drenaje voluntario del nodo
+# (kubectl drain se queda esperando para siempre, porque evacuar el único pod violaría el
+# presupuesto). Es el comportamiento correcto en producción, donde el HPA mantiene >= 2.
+# Para drenar el nodo local: kubectl drain <nodo> --disable-eviction, o borrar los PDB primero.
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ms-auth-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ms-auth-deployment
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 70% del 'requests.cpu: 100m' declarado en ms-auth.yaml, no del límite. El HPA calcula
+          # siempre contra requests: por eso D2 (resources) era prerrequisito de D3.
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Ventana de estabilización: sin esto, un pico corto seguido de calma provoca un ciclo de
+      # subir y bajar réplicas (thrashing) que degrada más de lo que ayuda.
+      stabilizationWindowSeconds: 300
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ms-auth-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ms-auth
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ms-usuarios-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ms-usuarios-deployment
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ms-usuarios-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ms-usuarios
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ms-agenda-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ms-agenda-deployment
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ms-agenda-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ms-agenda
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ms-notificaciones-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ms-notificaciones-deployment
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ms-notificaciones-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ms-notificaciones
+---
+# ms-tutorias: maxReplicas más bajo a propósito. Es el orquestador de la Saga y corre tres
+# procesos de fondo (outbox.publisher, compensacion.worker, reconciliacion.worker). Cada réplica
+# nueva agrega otra copia de esos pollers compitiendo por las mismas filas PENDIENTE: hoy la
+# exclusión depende del SELECT ... FOR UPDATE SKIP LOCKED del repositorio, no de un líder electo.
+# Escalarlo agresivamente multiplica la contención en la base antes que la capacidad de atender
+# requests. Issue abierto: separar los workers del proceso HTTP para poder escalarlos por separado.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ms-tutorias-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ms-tutorias-deployment
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ms-tutorias-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ms-tutorias

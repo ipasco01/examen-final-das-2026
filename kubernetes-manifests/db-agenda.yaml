@@ -34,6 +34,11 @@ spec:
       containers:
         - name: postgres
           image: postgres:14-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
           ports:
             - containerPort: 5432
           env:

@@ -37,6 +37,11 @@ spec:
       containers:
         - name: postgres
           image: postgres:14-alpine # Misma versión fijada que en docker-compose.yml
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
           ports:
             - containerPort: 5432
           env:
