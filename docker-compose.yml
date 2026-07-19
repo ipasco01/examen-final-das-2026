@@ -210,28 +210,9 @@ services:
       - postgres_data_tutorias:/var/lib/postgresql/data
 
   # --- MONITORIZACIÓN ---
-  # --- MONITORIZACIÓN ---
-  tempo:
-    image: grafana/tempo:latest
-    container_name: tempo
-    user: "0:0"
-    command: ["-config.file=/etc/tempo.yaml"]
-    volumes:
-      - ./tempo.yaml:/etc/tempo.yaml
-      - tempo_data:/tmp/tempo
-    ports:
-      - "3200:3200"
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
-    container_name: otel-collector
-    command: ["--config=/etc/otel-collector-config.yaml"]
-    volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
-    ports:
-      - "4317:4317"
-      - "4318:4318"
-    depends_on:
-      - tempo
+  # (tempo y otel-collector se definen más abajo, en la sección de trazas distribuidas,
+  #  con versiones fijadas; se eliminó el par duplicado que dejó el merge y que impedía
+  #  a docker compose parsear el archivo por claves repetidas)
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
