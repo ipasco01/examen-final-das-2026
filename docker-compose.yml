@@ -381,6 +381,17 @@ services:
   # --- MONITORIZACIÓN ---
   # --- MONITORIZACIÓN ---
   tempo:
+    # Equipo 5: healthcheck agregado tras VERIFICAR que la imagen tiene shell y wget
+    #   docker run --rm --entrypoint sh grafana/tempo:2.5.0 -c 'command -v wget'  -> /usr/bin/wget
+    # Antes lo habia descartado asumiendo que era distroless, sin comprobarlo. La suposicion era
+    # falsa: el mismo error de dar por hecho lo que no se ejecuta.
+    # /ready es el endpoint de readiness de Tempo (distinto de /status, que responde siempre).
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3200/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     # Version fijada por el Equipo 4 (2.5.0): corresponde a su tempo.yaml con wal y compactor.
     # Se prefiere su tag explicito antes que el digest de :latest que habiamos fijado, porque la
     # configuracion nueva esta escrita y probada contra esta version.
@@ -480,6 +491,20 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
 
   promtail:
+    # Equipo 5: healthcheck sin wget ni curl. Verificacion de lo que la imagen SI tiene:
+    #   command -v wget / curl / nc  -> ninguno
+    #   bash + /dev/tcp              -> disponibles (probado contra un host externo)
+    # bash abre sockets TCP de forma nativa con /dev/tcp, sin binarios extra. Comprueba que
+    # Promtail acepta conexiones en su http_listen_port (9080 en promtail-config.yaml).
+    # Limitacion honesta: valida el socket, no la logica interna. Para el fallo mas comun de un
+    # agente de logs -- proceso vivo pero sin escuchar -- alcanza. Un /ready real requeriria
+    # anadir un cliente HTTP a la imagen, que es peor negocio que este chequeo.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/9080' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     image: grafana/promtail:2.9.4
     container_name: promtail
     restart: unless-stopped
