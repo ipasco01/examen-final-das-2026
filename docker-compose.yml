@@ -419,7 +419,8 @@ services:
       - "4317:4317"
       - "4318:4318"
     depends_on:
-      - tempo
+      tempo:
+        condition: service_healthy
   prometheus:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
