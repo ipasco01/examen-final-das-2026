@@ -1,0 +1,23 @@
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    # Tempo puede recibir spans directamente, pero acá los va a recibir
+    # SIEMPRE desde el otel-collector, no de los microservicios directo
+    otlp:
+      protocols:
+        http:
+        grpc:
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo/traces
+    wal:
+      path: /tmp/tempo/wal
+
+compactor:
+  compaction:
+    block_retention: 48h # no necesitas guardar trazas más que un par de días para la demo

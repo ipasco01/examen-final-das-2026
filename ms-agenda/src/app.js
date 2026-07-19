@@ -4,6 +4,7 @@ const config = require('./config'); // <-- USAR EL NUEVO CONFIG
 const agendaRouter = require('./api/routes/agenda.routes');
 const errorHandler = require('./api/middlewares/errorHandler');
 const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
+const requestLogger = require('./api/middlewares/requestLogger.js');
 const messageProducer = require('./infrastructure/messaging/message.producer'); // <-- IMPORTAR PRODUCTOR
 const promBundle = require("express-prom-bundle");
 
@@ -24,6 +25,7 @@ app.use(metricsMiddleware);
 
 app.use(express.json());
 app.use(correlationIdMiddleware);
+app.use(requestLogger);
 app.use('/agenda', agendaRouter);
 app.use(errorHandler);
 
