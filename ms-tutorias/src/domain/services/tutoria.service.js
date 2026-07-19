@@ -255,7 +255,7 @@ const listarTutoriasPorEstudiante = async (idEstudiante) => tutoriaRepository.fi
 // estudiante, "cancelar" siempre debe funcionar; liberar el horario en ms-agenda es una
 // preocupación operativa de fondo (reintentada por el worker si el intento inmediato falla), no
 // algo que deba bloquear ni revertir la cancelación.
-const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, correlationId) => {
+const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, correlationId, authHeader) => {
     const trackCid = (message, status = 'INFO') => track(correlationId, message, status);
 
     const tutoria = await tutoriaRepository.findById(idTutoria);
@@ -283,7 +283,7 @@ const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, co
 
         for (let intento = 1; intento <= COMPENSACION_MAX_INTENTOS && !liberado; intento++) {
             try {
-                await agendaClient.cancelarBloqueo(idBloqueo, correlationId);
+                await agendaClient.cancelarBloqueo(idBloqueo, correlationId, authHeader);
                 liberado = true;
                 trackCid(`Horario liberado en intento ${intento}.`);
             } catch (err) {
@@ -314,7 +314,7 @@ const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, co
     return tutoriaCancelada;
 };
 
-const cancelarTutoria = (idTutoria, idEstudianteSolicitante, correlationId) =>
-    conTimeoutDeSaga(() => ejecutarCancelacionTutoria(idTutoria, idEstudianteSolicitante, correlationId));
+const cancelarTutoria = (idTutoria, idEstudianteSolicitante, correlationId, authHeader) =>
+    conTimeoutDeSaga(() => ejecutarCancelacionTutoria(idTutoria, idEstudianteSolicitante, correlationId, authHeader));
 
 module.exports = { solicitarTutoria, obtenerTutoriaPorId, listarTutoriasPorEstudiante, cancelarTutoria };

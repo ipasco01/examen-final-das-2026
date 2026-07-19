@@ -1,4 +1,9 @@
 # kubernetes-manifests/ms-auth.yaml
+#
+# Equipo 5 (Deployment) — issue "K8s operable": probes, resources y variables de BD sincronizadas
+# con docker-compose.yml (antes este manifiesto no definía conexión a base de datos).
+# Los probes usan /metrics (express-prom-bundle) como endpoint de salud básico; el siguiente paso,
+# coordinado con el Equipo 4, es un /health que verifique dependencias.
 apiVersion: v1
 kind: Service
 metadata:
@@ -24,18 +29,57 @@ spec:
   template:
     metadata:
       annotations:
-          linkerd.io/inject: enabled
+        linkerd.io/inject: enabled
       labels:
         app: ms-auth # Etiqueta que el Service usa para encontrar este Pod
     spec:
+      # Equipo 5 (D4 de la auditoria, mitad Kubernetes): el USER del Dockerfile es una
+      # preferencia de la imagen; securityContext es la garantia del cluster. Sin runAsNonRoot,
+      # una imagen que por descuido vuelva a root corre como root y nadie se entera.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000          # usuario 'node', ya existe en node:*-alpine
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
         - name: ms-auth
-          image: edsaana/ms-auth:1.2 # La imagen que publicaste
+          image: ghcr.io/elcbas/ms-auth:0ab70dc # Equipo 5: imagen construida desde ESTE repo (commit 0ab70dc)
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]     # la app solo abre un puerto > 1024: no necesita ninguna capability
+
           ports:
             - containerPort: 4000
+          # --- Equipo 5: chequeos de salud ---
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 4000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 4000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          # --- Equipo 5: garantías de capacidad (base para HPA futuro) ---
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
           env:
             - name: PORT
               value: "4000"
+            - name: SERVICE_NAME
+              value: "MS_Auth"
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -43,3 +87,19 @@ spec:
                   key: JWT_SECRET
             - name: JWT_EXPIRES_IN
               value: "1h"
+            # --- Equipo 5: BD sincronizada con el compose. El Service db-auth-service se crea en
+            # el issue 3 (StatefulSets de datos); la contraseña viene del Secret
+            # app-runtime-secrets, que NO se versiona (ver app-runtime-secrets.example.yaml). ---
+            - name: DB_HOST
+              value: "db-auth-service"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: "user_auth"
+            - name: DB_NAME
+              value: "db_auth"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: AUTH_DB_PASSWORD

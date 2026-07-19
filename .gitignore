@@ -30,7 +30,11 @@ node_modules/
 Thumbs.db
 desktop.ini
 
-# 6. Claude Code
+# 6. Secretos de Kubernetes (Equipo 5)
+# El Secret real se crea copiando app-runtime-secrets.example.yaml; NUNCA se commitea.
+kubernetes-manifests/app-runtime-secrets.yaml
+
+# 7. Claude Code
 .claude/
 **/.claude/
 CLAUDE.local.md
