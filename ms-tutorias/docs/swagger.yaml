@@ -10,7 +10,7 @@ tags:
   - name: Tutorías
     description: Solicitud y confirmación de tutorías
 paths:
-  /tutorias:
+  /v1/tutorias:
     post:
       tags:
         - Tutorías
@@ -37,13 +37,16 @@ paths:
                   materia: Cálculo Multivariable
       responses:
         '201':
-          description: Tutoría confirmada o actualizada al estado resultante del flujo.
+          description: Tutoría confirmada (o solicitud idempotente que retorna una tutoría PENDIENTE/CONFIRMADA ya existente).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Tutoria'
         '400':
-          description: Falta el header `Idempotency-Key`, obligatorio para esta operación.
+          description: >-
+            Falta el header `Idempotency-Key`, obligatorio para esta operación; o el cuerpo tiene
+            `idTutor`/`materia` vacíos, `duracionMinutos` no es un número positivo, o
+            `fechaSolicitada` no es una fecha ISO 8601 válida o no es futura.
           content:
             application/json:
               schema:
@@ -67,11 +70,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Horario no disponible o conflicto de reserva reportado por `ms-agenda`.
+          description: >-
+            Horario no disponible o conflicto de reserva reportado por `ms-agenda` (cuerpo `ErrorResponse`); o la
+            `Idempotency-Key` corresponde a una tutoría que ya quedó `FALLIDA` en un intento anterior -- se
+            retorna esa tutoría directamente sin reejecutar la Saga (cuerpo `Tutoria`).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/Tutoria'
         '503':
           description: '`ms-usuarios` o `ms-agenda` no disponible temporalmente por timeout, red o Circuit Breaker abierto.'
           content:
@@ -80,6 +88,115 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Error interno o fallo no controlado durante la orquestación/compensación.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags:
+        - Tutorías
+      summary: Lista las tutorías del estudiante autenticado
+      description: >-
+        Requiere JWT Bearer. Devuelve todas las tutorías (en cualquier estado) del estudiante
+        identificado por el claim `sub` del token, más recientes primero. No hay un camino
+        equivalente para tutores todavía.
+      operationId: listarTutorias
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Listado de tutorías del estudiante autenticado (puede ser un array vacío).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Tutoria'
+        '401':
+          description: Token ausente, mal formado, inválido o expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/tutorias/{id}:
+    get:
+      tags:
+        - Tutorías
+      summary: Consulta el estado de una tutoría (S8)
+      description: >-
+        Requiere JWT Bearer. Permite consultar el estado de una tutoría después de crearla (por
+        ejemplo, una que quedó `PENDIENTE` por una respuesta lenta de una dependencia). Solo el
+        estudiante dueño de la tutoría puede consultarla; si no existe o pertenece a otro
+        estudiante, responde `404` en ambos casos (no se distingue, para no confirmarle a un
+        estudiante autenticado que un `idTutoria` ajeno existe).
+      operationId: getTutoriaPorId
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tutoría encontrada y perteneciente al estudiante autenticado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tutoria'
+        '401':
+          description: Token ausente, mal formado, inválido o expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No existe una tutoría con ese id, o no pertenece al estudiante autenticado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - Tutorías
+      summary: Cancela una tutoría CONFIRMADA
+      description: >-
+        Requiere JWT Bearer. Solo se puede cancelar una tutoría en estado `CONFIRMADA`. Intenta
+        liberar el horario en `ms-agenda` de inmediato (con reintentos); si no lo logra, la
+        tutoría igual queda `CANCELADA` y la liberación se reintenta en segundo plano (misma
+        infraestructura que la compensación de la Saga). Mismo criterio de ownership que el `GET`:
+        404 uniforme para "no existe" y "no es tuya".
+      operationId: cancelarTutoria
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tutoría cancelada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tutoria'
+        '401':
+          description: Token ausente, mal formado, inválido o expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No existe una tutoría con ese id, o no pertenece al estudiante autenticado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: La tutoría existe pero no está en estado `CONFIRMADA` (no se puede cancelar).
           content:
             application/json:
               schema:
@@ -131,17 +248,27 @@ components:
       additionalProperties: true
     Tutoria:
       type: object
+      description: >-
+        DTO de respuesta pública construido explícitamente por el controlador (no la fila cruda de
+        PostgreSQL): usa camelCase, igual que el body de la solicitud, y omite `motivoFallo` salvo
+        cuando `estado` es `FALLIDA`.
       properties:
-        idtutoria:
-          type: integer
-          description: Identificador devuelto por PostgreSQL con nombre normalizado a minúsculas.
+        idTutoria:
+          type: string
           example: 101
-        idestudiante:
+        idEstudiante:
           type: string
           example: e12345
-        idtutor:
+        idTutor:
           type: string
           example: t09876
+        tutorNombre:
+          type: string
+          nullable: true
+          description: >-
+            Nombre del tutor, resuelto contra ms-usuarios al momento de crear la tutoría. `null`
+            en filas creadas antes de que este campo existiera.
+          example: Dra. Elena Solano
         fecha:
           type: string
           format: date-time
@@ -155,12 +282,12 @@ components:
             - PENDIENTE
             - CONFIRMADA
             - FALLIDA
+            - CANCELADA
           example: CONFIRMADA
-        error:
+        motivoFallo:
           type: string
-          nullable: true
-          example: null
-      additionalProperties: true
+          description: Solo presente cuando `estado` es `FALLIDA`.
+          example: 'Horario no disponible'
     ErrorResponse:
       type: object
       properties:

@@ -7,21 +7,33 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 400
+    spike_limit_mib: 100
   batch:
     timeout: 5s
-    send_batch_size: 1024
+    send_batch_size: 512
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: "development"
+        action: upsert
 
 exporters:
-  otlp:
+  otlp/tempo:
     endpoint: tempo:4317
     tls:
       insecure: true
+  debug:
+    verbosity: basic
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [otlp]
-
-
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlp/tempo, debug]
+  telemetry:
+    logs:
+      level: info

@@ -18,7 +18,7 @@ const login = async (username, password) => {
 // --- FUNCIÓN MODIFICADA ---
 // Ahora acepta el token y el correlationId para los headers
 const solicitarTutoria = async (payload, token, correlationId) => {
-    const url = `${apiBaseUrl}/tutorias`;
+    const url = `${apiBaseUrl}/v1/tutorias`;
     console.log(`[CLIENT] ---> POST ${url} | Correlation-ID: ${correlationId}`);
     
     const response = await axios.post(url, payload, {
@@ -31,4 +31,32 @@ const solicitarTutoria = async (payload, token, correlationId) => {
     return response.data;
 };
 
-module.exports = { login, solicitarTutoria };
+// Listado de "mis tutorías" del estudiante autenticado (GET /v1/tutorias).
+const listarTutorias = async (token, correlationId) => {
+    const url = `${apiBaseUrl}/v1/tutorias`;
+    console.log(`[CLIENT] ---> GET ${url} | Correlation-ID: ${correlationId}`);
+
+    const response = await axios.get(url, {
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'X-Correlation-ID': correlationId
+        }
+    });
+    return response.data;
+};
+
+// Cancela una tutoría CONFIRMADA (DELETE /v1/tutorias/:id).
+const cancelarTutoria = async (idTutoria, token, correlationId) => {
+    const url = `${apiBaseUrl}/v1/tutorias/${idTutoria}`;
+    console.log(`[CLIENT] ---> DELETE ${url} | Correlation-ID: ${correlationId}`);
+
+    const response = await axios.delete(url, {
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'X-Correlation-ID': correlationId
+        }
+    });
+    return response.data;
+};
+
+module.exports = { login, solicitarTutoria, listarTutorias, cancelarTutoria };

@@ -22,7 +22,7 @@ const createRequest = ({ idempotencyKey, headerValue }) => ({
     body: {
         idEstudiante: 'student-from-body',
         idTutor: 'tutor-1',
-        fechaSolicitada: '2026-06-24T10:00:00.000Z',
+        fechaSolicitada: '2030-06-24T10:00:00.000Z',
         duracionMinutos: 60,
         materia: 'Arquitectura de Software'
     },
@@ -292,15 +292,20 @@ test('D5: primera solicitud con una key nueva ejecuta la Saga completa y persist
     assert.equal(res.body.estado, 'CONFIRMADA');
     assert.equal(calls.saves[0].idempotencyKey, 'idem-d5-nueva');
     assert.equal(calls.outbox.length, 1);
-    assert.equal(calls.outbox[0].idTutoria, res.body.idtutoria);
+    assert.equal(calls.outbox[0].idTutoria, res.body.idTutoria);
 });
 
 test('D5: reintentar con una key ya CONFIRMADA corta antes de tocar usuarios, agenda o notificación', async () => {
+    // Casing en minúscula (idestudiante/idtutor/error) para simular fielmente lo que devuelve
+    // PostgreSQL vía RETURNING * sobre columnas sin comillas -- ver toTutoriaResponse (E2).
     const tutoriaExistente = {
         idtutoria: 'tutoria-previa',
-        idEstudiante: 'student-from-token',
-        idTutor: 'tutor-1',
+        idestudiante: 'student-from-token',
+        idtutor: 'tutor-1',
+        fecha: '2026-06-24T10:00:00.000Z',
+        materia: 'Arquitectura de Software',
         estado: 'CONFIRMADA',
+        error: null,
         idempotencyKey: 'idem-d5-repetida'
     };
 
@@ -313,7 +318,53 @@ test('D5: reintentar con una key ya CONFIRMADA corta antes de tocar usuarios, ag
 
     assert.equal(nextError, undefined);
     assert.equal(res.statusCode, 201);
-    assert.deepEqual(res.body, tutoriaExistente);
+    assert.deepEqual(res.body, {
+        idTutoria: 'tutoria-previa',
+        idEstudiante: 'student-from-token',
+        idTutor: 'tutor-1',
+        tutorNombre: null,
+        fecha: '2026-06-24T10:00:00.000Z',
+        materia: 'Arquitectura de Software',
+        estado: 'CONFIRMADA'
+    });
+
+    assert.deepEqual(calls.order, ['idempotency:lookup']);
+    assert.equal(calls.users.length, 0);
+    assert.equal(calls.agenda.length, 0);
+    assert.equal(calls.notifications.length, 0);
+});
+
+test('D5: reintentar con una key ya FALLIDA responde 409 con el motivo, sin volver a ejecutar la Saga', async () => {
+    const tutoriaFallida = {
+        idtutoria: 'tutoria-fallida-previa',
+        idestudiante: 'student-from-token',
+        idtutor: 'tutor-1',
+        fecha: '2026-06-24T10:00:00.000Z',
+        materia: 'Arquitectura de Software',
+        estado: 'FALLIDA',
+        error: 'Horario no disponible',
+        idempotencyKey: 'idem-d5-fallida'
+    };
+
+    const { controller, calls } = loadControllerWithStubs({ seedTutorias: [tutoriaFallida] });
+    const req = createRequest({ idempotencyKey: 'idem-d5-fallida' });
+    const res = createResponse();
+    let nextError;
+
+    await controller.postSolicitud(req, res, (error) => { nextError = error; });
+
+    assert.equal(nextError, undefined);
+    assert.equal(res.statusCode, 409);
+    assert.deepEqual(res.body, {
+        idTutoria: 'tutoria-fallida-previa',
+        idEstudiante: 'student-from-token',
+        idTutor: 'tutor-1',
+        tutorNombre: null,
+        fecha: '2026-06-24T10:00:00.000Z',
+        materia: 'Arquitectura de Software',
+        estado: 'FALLIDA',
+        motivoFallo: 'Horario no disponible'
+    });
 
     assert.deepEqual(calls.order, ['idempotency:lookup']);
     assert.equal(calls.users.length, 0);

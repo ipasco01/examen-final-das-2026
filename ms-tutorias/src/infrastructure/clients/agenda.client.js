@@ -17,12 +17,12 @@ const breakerOptions = {
 };
 
 // Función que realiza la petición real (GET/POST hacia ms-agenda)
-const _makeRequest = async (method, url, correlationId, data) => {
+const _makeRequest = async (method, url, correlationId, data, authHeader) => {
     const response = await axios({
         method,
         url,
         data,
-        headers: { 'X-Correlation-ID': correlationId },
+        headers: { 'X-Correlation-ID': correlationId, Authorization: authHeader },
         timeout: 1500 // Timeout a nivel de red también
     });
     return response.data;
@@ -50,18 +50,18 @@ const reportOpenCircuit = async (correlationId) => {
 
 const isOpenCircuitError = (error) => breaker.opened || error.code === 'EOPENBREAKER';
 
-const fireRequest = async (method, url, correlationId, data) => {
+const fireRequest = async (method, url, correlationId, data, authHeader) => {
     try {
-        return await breaker.fire(method, url, correlationId, data);
+        return await breaker.fire(method, url, correlationId, data, authHeader);
     } catch (error) {
         // Si el breaker está abierto, fallamos rápido con un error 503
         if (isOpenCircuitError(error)) {
             console.error(`[CircuitBreaker] Fallo rápido para ${url}`);
             await reportOpenCircuit(correlationId);
-            throw {
-                statusCode: 503,
-                message: 'Servicio de agenda no disponible temporalmente por timeout/red o Circuit Breaker abierto.'
-            };
+            throw Object.assign(
+                new Error('Servicio de agenda no disponible temporalmente por timeout/red o Circuit Breaker abierto.'),
+                { statusCode: 503 }
+            );
         }
 
         // Cualquier otro error (incluido el 409 de negocio, ver errorFilter arriba)
@@ -71,11 +71,11 @@ const fireRequest = async (method, url, correlationId, data) => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const verificarDisponibilidad = async (idTutor, fechaHora, correlationId) => {
+const verificarDisponibilidad = async (idTutor, fechaHora, correlationId, authHeader) => {
     const url = `${agendaServiceUrl}/tutores/${idTutor}/disponibilidad?fechaHora=${fechaHora}`;
 
     try {
-        const data = await fireRequest('get', url, correlationId);
+        const data = await fireRequest('get', url, correlationId, undefined, authHeader);
         return data.disponible;
     } catch (error) {
         // Retry único y acotado: es la primera llamada de la Saga y una lectura idempotente, así
@@ -85,17 +85,17 @@ const verificarDisponibilidad = async (idTutor, fechaHora, correlationId) => {
         if (!esFalloDeRedOTimeout) throw error;
 
         await sleep(150);
-        const data = await fireRequest('get', url, correlationId);
+        const data = await fireRequest('get', url, correlationId, undefined, authHeader);
         return data.disponible;
     }
 };
 
-const bloquearAgenda = async (idTutor, payload, correlationId) => {
+const bloquearAgenda = async (idTutor, payload, correlationId, authHeader) => {
     const url = `${agendaServiceUrl}/tutores/${idTutor}/bloquear`;
-    return fireRequest('post', url, correlationId, payload);
+    return fireRequest('post', url, correlationId, payload, authHeader);
 };
 
-const cancelarBloqueo = async (idBloqueo, correlationId) => {
+const cancelarBloqueo = async (idBloqueo, correlationId, authHeader) => {
     const url = `${agendaServiceUrl}/bloqueos/${idBloqueo}`;
     console.log(`[AgendaClient] Compensando: Eliminando bloqueo ${idBloqueo}`);
 
@@ -104,7 +104,7 @@ const cancelarBloqueo = async (idBloqueo, correlationId) => {
     // llamada en el breaker compartido nestearía retries y podría convertir esos reintentos en
     // fallos sintéticos 503 casi instantáneos si el circuito quedara abierto por el otro camino.
     await axios.delete(url, {
-        headers: { 'X-Correlation-ID': correlationId },
+        headers: { 'X-Correlation-ID': correlationId, Authorization: authHeader },
         timeout: 1500
     });
 };

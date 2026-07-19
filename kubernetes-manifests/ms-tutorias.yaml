@@ -3,6 +3,10 @@ apiVersion: v1
 kind: Service
 metadata:
   name: ms-tutorias-service
+  annotations:
+    # Protege este backend específico con el plugin JWT (ver main-ingress.yaml para el porqué de
+    # anotar el Service en vez del Ingress).
+    konghq.com/plugins: jwt-validation-plugin
 spec:
   selector:
     app: ms-tutorias

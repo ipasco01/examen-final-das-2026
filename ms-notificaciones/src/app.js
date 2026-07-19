@@ -1,5 +1,8 @@
 // ms-notificaciones/src/app.js
 const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const config = require('./config');
 const notificacionesRouter = require('./api/routes/notificaciones.routes');
 const errorHandler = require('./api/middlewares/errorHandler'); // Reutilizamos el mismo middleware
@@ -13,6 +16,10 @@ const promBundle = require("express-prom-bundle");
 const RABBITMQ_RETRY_DELAY_MS = 5000;
 
 const app = express();
+
+app.use(helmet());
+app.use(cors());
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }));
 
 const metricsMiddleware = promBundle({
     includeMethod: true,

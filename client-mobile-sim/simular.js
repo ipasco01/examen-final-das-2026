@@ -10,7 +10,7 @@ const MATERIA = 'Cálculo Multivariable';
 
 // URLs de nuestros microservicios (el cliente conoce los puntos de entrada)
 const URL_AGENDA = `http://localhost:3002/agenda`;
-const URL_TUTORIAS = `http://localhost:3000/tutorias`;
+const URL_TUTORIAS = `http://localhost:3000/v1/tutorias`;
 
 // Función para imprimir logs de forma fina
 const log = (paso, mensaje, data = '') => {

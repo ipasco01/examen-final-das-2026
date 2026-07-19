@@ -13,10 +13,10 @@ const breakerOptions = {
 };
 
 // Función que realiza la petición real
-const _makeRequest = async (url, correlationId) => {
+const _makeRequest = async (url, correlationId, authHeader) => {
     try {
         const response = await axios.get(url, {
-            headers: { 'X-Correlation-ID': correlationId },
+            headers: { 'X-Correlation-ID': correlationId, Authorization: authHeader },
             timeout: 1500 // Timeout a nivel de red también
         });
         return response.data;
@@ -47,12 +47,12 @@ const reportOpenCircuit = async (correlationId) => {
 
 const isOpenCircuitError = (error) => breaker.opened || error.code === 'EOPENBREAKER';
 
-const getUsuario = async (tipo, id, correlationId) => {
+const getUsuario = async (tipo, id, correlationId, authHeader) => {
     const url = `${usuariosServiceUrl}/${tipo}/${id}`;
 
     try {
         // 4. Ejecutar a través del Breaker
-        const data = await breaker.fire(url, correlationId);
+        const data = await breaker.fire(url, correlationId, authHeader);
         return data;
     } catch (error) {
         // Si el breaker está abierto, fallamos rápido con un error 503
@@ -60,10 +60,10 @@ const getUsuario = async (tipo, id, correlationId) => {
             console.error(`[CircuitBreaker] Fallo rápido para ${url}`);
             // Reportar evento crítico al dashboard
             await reportOpenCircuit(correlationId);
-            throw {
-                statusCode: 503,
-                message: 'Servicio de usuarios no disponible temporalmente por timeout/red o Circuit Breaker abierto. Revisa la columna MS_Usuarios del dashboard para confirmar si la causa raíz es BD no inicializada, error interno o latencia.'
-            };
+            throw Object.assign(
+                new Error('Servicio de usuarios no disponible temporalmente por timeout/red o Circuit Breaker abierto. Revisa la columna MS_Usuarios del dashboard para confirmar si la causa raíz es BD no inicializada, error interno o latencia.'),
+                { statusCode: 503 }
+            );
         }
 
         // Cualquier otro error

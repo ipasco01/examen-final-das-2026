@@ -25,7 +25,15 @@ Los comandos usan `docker compose`, que es la sintaxis moderna integrada a Docke
 
 ## Configurar variables de entorno
 
-Desde la raíz del repositorio, crear los archivos `.env` locales a partir de las plantillas:
+`docker-compose.yml` no trae ningún secreto por defecto: `JWT_SECRET`, las contraseñas de las 4 bases de datos, las credenciales de RabbitMQ y la contraseña de Grafana son obligatorias. Sin un `.env` en la **raíz** del repositorio, `docker compose up` falla con un mensaje indicando qué variable falta.
+
+```bash
+cp .env.example .env
+```
+
+Los valores de ejemplo son placeholders (`cambia-esta-password`, etc.) — reemplázalos por valores propios de desarrollo local antes de levantar el entorno. `.env` está en `.gitignore`; nunca commitear el real.
+
+Además, crear los `.env` por servicio a partir de sus plantillas (usados solo si corres algún servicio fuera de Docker con `npm run dev`; Docker Compose no los lee, ya que inyecta sus propias variables):
 
 ```bash
 cp ms-auth/.env.example ms-auth/.env
@@ -67,6 +75,34 @@ Resultado esperado después del arranque:
 ## Inicializar bases de datos
 
 Los contenedores PostgreSQL se crean vacíos. Ejecutar los siguientes scripts en cada base de datos.
+
+### `db_auth` en puerto `5435`
+
+Conexión:
+
+| Campo | Valor |
+| --- | --- |
+| Host | `localhost` |
+| Puerto | `5435` |
+| Base de datos | `db_auth` |
+| Usuario | `user_auth` |
+| Contraseña | `password_auth` |
+
+```sql
+CREATE TABLE users (
+    id VARCHAR(50) PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    passwordHash VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    role VARCHAR(50) NOT NULL
+);
+
+INSERT INTO users (id, username, passwordHash, name, role) VALUES
+('e12345', 'ana.torres', '$2a$10$l9BWZgXLWxnVg.3B74PNi.0CTb93Wsin/XzzqGJLKT0/NrT7epiSm', 'Ana Torres', 'student'),
+('t09876', 'elena.solano', '$2a$10$gKxWS9CIu7QUq9ySaw6cSuns8gXvY/x/ynjj/X.giRWgN4jBuQ46W', 'Dra. Elena Solano', 'tutor');
+```
+
+> Los hashes de ejemplo corresponden a las contraseñas demo `password_ana` y `password_elena` (bcrypt). Reemplázalos por hashes propios antes de cualquier uso fuera de desarrollo local.
 
 ### `db_usuarios` en puerto `5432`
 
@@ -154,13 +190,15 @@ CREATE TABLE tutorias (
     idTutoria UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     idEstudiante VARCHAR(50) NOT NULL,
     idTutor VARCHAR(50) NOT NULL,
+    nombreTutor VARCHAR(255),
     materia VARCHAR(255),
     fecha TIMESTAMPTZ NOT NULL,
     estado VARCHAR(50) NOT NULL CHECK (estado IN ('PENDIENTE', 'CONFIRMADA', 'FALLIDA', 'CANCELADA')),
     createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     error VARCHAR(500),
-    idempotencyKey VARCHAR(255) UNIQUE
+    idempotencyKey VARCHAR(255) UNIQUE,
+    idBloqueo UUID
 );
 
 CREATE INDEX idx_tutorias_idEstudiante ON tutorias(idEstudiante);
@@ -219,7 +257,7 @@ CREATE TABLE compensaciones_pendientes (
 CREATE INDEX idx_compensaciones_pendientes_estado ON compensaciones_pendientes(estado);
 ```
 
-> `POST /tutorias` exige el header `Idempotency-Key`; `ms-tutorias` la persiste en la columna
+> `POST /v1/tutorias` exige el header `Idempotency-Key`; `ms-tutorias` la persiste en la columna
 > `idempotencyKey` para deduplicar reintentos. Si `db_tutorias` ya existe de una instalación previa (sin esta
 > columna), aplicar manualmente en vez de recrear la tabla:
 >
@@ -264,6 +302,17 @@ CREATE INDEX idx_compensaciones_pendientes_estado ON compensaciones_pendientes(e
 > );
 >
 > CREATE INDEX idx_compensaciones_pendientes_estado ON compensaciones_pendientes(estado);
+> ```
+
+> Cancelación de tutorías (`DELETE /v1/tutorias/:id`): para poder liberar el horario en `ms-agenda` al
+> cancelar, `ms-tutorias` necesita saber qué bloqueo corresponde a cada tutoría -- antes no se persistía en
+> ningún lado (solo vivía en memoria durante la Saga). `nombreTutor` es una denormalización del nombre ya
+> resuelto contra `ms-usuarios` en el paso 1 de la Saga, para no tener que volver a consultarlo en cada
+> lectura. Si `db_tutorias` ya existe de una instalación previa, aplicar manualmente:
+>
+> ```sql
+> ALTER TABLE tutorias ADD COLUMN idBloqueo UUID;
+> ALTER TABLE tutorias ADD COLUMN nombreTutor VARCHAR(255);
 > ```
 
 ## Verificar accesos
