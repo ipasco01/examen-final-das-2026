@@ -379,7 +379,6 @@ services:
       start_period: 10s
 
   # --- MONITORIZACIÓN ---
-  # --- MONITORIZACIÓN ---
   tempo:
     # Equipo 5: healthcheck agregado tras VERIFICAR que la imagen tiene shell y wget
     #   docker run --rm --entrypoint sh grafana/tempo:2.5.0 -c 'command -v wget'  -> /usr/bin/wget
@@ -516,10 +515,32 @@ services:
       - ./promtail-config.yaml:/etc/promtail/config.yml:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:
-      # Equipo 5: espera a que Loki este SANO, no solo encendido. Si Promtail arranca antes, los
-      # primeros logs se pierden porque el destino todavia no acepta escrituras.
       loki:
         condition: service_healthy
+
+  # --- Trazas distribuidas (OTel Collector + Tempo) ---
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC: los microservicios apuntan acá (OTEL_EXPORTER_OTLP_ENDPOINT)
+      - "4318:4318" # OTLP HTTP: alternativa al gRPC, útil para probar con curl
+    depends_on:
+      - tempo
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: tempo
+    user: "0:0" # evita "permission denied" al escribir en el volumen tempo_data
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/tmp/tempo
+    ports:
+      - "3200:3200" # API HTTP: Grafana consulta las trazas acá
 
 # --- Definición de Volúmenes ---
 volumes:
