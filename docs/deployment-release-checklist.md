@@ -33,7 +33,7 @@ Para rotarla hay que borrar el volumen (`docker compose down -v`) o crear el usu
 
 - [ ] Existe `.env` en la raíz, copiado de `.env.example`, sin ningún valor `cambia-esta-password`.
 - [ ] `.env` **no** está trackeado por git: `git check-ignore .env` devuelve `.env`.
-- [ ] Existe `kubernetes-manifests/app-runtime-secrets.yaml` (copia de `.example`), con los
+- [ ] Existe `kubernetes-manifests/app-runtime-secrets.yaml` (copiado de `examples/app-runtime-secrets.example.yaml`), con los
       **mismos valores** que el `.env`, y sin ningún `COMPLETAR`.
 - [ ] El placeholder `CHANGE_ME_WITH_APP_JWT_SECRET` de `kong-security.yaml` fue reemplazado por
       el `JWT_SECRET` real, **en los dos lugares** donde aparece (Secret `app-jwt-secret` y
@@ -87,26 +87,47 @@ docker compose config | grep -E "image:.*latest"   # sin resultados
 
 ## 4. Kubernetes
 
-**El orden importa: son DOS Secrets, no uno.** Si se aplican los Deployments antes que los
-Secrets, los 5 microservicios entran en `CrashLoopBackOff` con
-`FATAL ERROR: JWT_SECRET no está definida` — la app hace fail-fast por diseño.
+**El orden importa, y no es el intuitivo.** Verificado en el despliegue del 18/07:
 
-```bash
-kubectl apply -f kubernetes-manifests/kong-security.yaml         # 1. app-jwt-secret (Equipo 3)
-kubectl apply -f kubernetes-manifests/app-runtime-secrets.yaml   # 2. app-runtime-secrets (Equipo 5)
-kubectl apply -f kubernetes-manifests/                           # 3. el resto
-kubectl get pods -w
+Son DOS Secrets. `app-runtime-secrets` (nuestro) y `app-jwt-secret` (de `kong-security.yaml`,
+Equipo 3). Y los valores reales de los secretos se inyectan **DESPUES** del apply masivo, no
+antes: `kubectl apply -f kubernetes-manifests/` vuelve a aplicar `kong-security.yaml`, que trae
+el placeholder `CHANGE_ME_WITH_APP_JWT_SECRET` y pisa cualquier valor real cargado antes. Es la
+misma clase de error que motivo mover la plantilla a `examples/`.
+
+```powershell
+# 1. Manifiestos (crea Secrets con placeholders, StatefulSets, Deployments, Services)
+kubectl apply -f kubernetes-manifests/
+
+# 2. Secret de datos, con valores reales
+kubectl apply -f kubernetes-manifests/app-runtime-secrets.yaml
+
+# 3. JWT real, DESPUES del apply masivo. Sin JSON inline: PowerShell no escapa bien las comillas
+#    y kubectl recibe los \" literales.
+$jwt = "<el JWT_SECRET del .env raiz>"
+kubectl create secret generic app-jwt-secret --from-literal=JWT_SECRET=$jwt --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic mobile-app-consumer-jwt-credential --from-literal=key=e12345 --from-literal=secret=$jwt --dry-run=client -o yaml | kubectl apply -f -
+kubectl annotate secret mobile-app-consumer-jwt-credential konghq.com/consumer=mobile-app-consumer konghq.com/credential-type=jwt --overwrite
+
+# 4. Reiniciar: las env desde Secret se leen al arrancar el pod, no se recargan solas
+kubectl rollout restart deployment ms-auth-deployment ms-usuarios-deployment ms-agenda-deployment ms-tutorias-deployment ms-notificaciones-deployment
+
+kubectl get pods
+kubectl get pvc
 ```
 
-- [ ] Los 5 StatefulSets (4 bases + RabbitMQ) llegan a `Ready` con su PVC enlazado.
-- [ ] Los 5 Deployments llegan a `1/1 Running`, no `CrashLoopBackOff`.
-- [ ] Los `DB_HOST` de los Deployments coinciden con los nombres de los Services.
-- [ ] Ningún pod queda sin `resources` ni sin probes.
+Errores esperados que NO son fallas: `no matches for kind "KongPlugin"` y `"KongConsumer"`.
+Son CRDs de Kong, que no esta instalado en el cluster local. Los Secrets si se crean.
 
-```bash
+- [ ] Los 5 StatefulSets (4 bases + RabbitMQ) llegan a `Ready` con su PVC en `Bound`.
+- [ ] Los 5 Deployments llegan a `1/1 Running`, no `CrashLoopBackOff`.
+- [ ] Ningun pod arranca con el placeholder: si se salteo el paso 3, los microservicios corren
+      con `CHANGE_ME_WITH_APP_JWT_SECRET` como secreto de firma y ningun token real valida.
+
+```powershell
 kubectl get pvc                                    # todos Bound
 kubectl get pods -o wide                           # ninguno en CrashLoopBackOff
-kubectl rollout status deployment/ms-auth --timeout=90s
+kubectl exec deploy/ms-auth-deployment -- printenv JWT_SECRET   # NO debe decir CHANGE_ME
 ```
 
 Rollback de un servicio: `kubectl rollout undo deployment/<nombre>`.

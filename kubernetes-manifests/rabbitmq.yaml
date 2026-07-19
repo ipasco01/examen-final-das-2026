@@ -55,17 +55,35 @@ spec:
                 secretKeyRef:
                   name: app-runtime-secrets
                   key: RABBITMQ_DEFAULT_PASS
+          # HALLAZGO DE VALIDACION EN CLUSTER (18/07) — timeoutSeconds explicito.
+          # Sintoma: rabbitmq-0 en 0/1 con reinicios, evento
+          #   'Readiness probe failed: command timed out: "rabbitmq-diagnostics -q ping"
+          #    timed out after 1s'
+          # Causa: 'rabbitmq-diagnostics' levanta una VM de Erlang y tarda 2-5s en responder.
+          # timeoutSeconds en Kubernetes vale 1 por defecto, asi que la probe NUNCA podia pasar y
+          # la liveness mataba el broker en loop. El mismo comando en docker-compose.yml si
+          # funciona porque alli declaramos 'timeout: 10s' (y el default de compose es 30s).
+          # Leccion: portar un healthcheck de compose a K8s no es copiar el comando; los defaults
+          # de cada plataforma son distintos y el que no se declara, se pierde.
+          startupProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 18   # hasta 3 minutos de arranque tolerado
           readinessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "-q", "ping"]
             initialDelaySeconds: 20
             periodSeconds: 10
+            timeoutSeconds: 10
             failureThreshold: 3
           livenessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "-q", "ping"]
             initialDelaySeconds: 60
             periodSeconds: 15
+            timeoutSeconds: 10
             failureThreshold: 3
           resources:
             requests:
