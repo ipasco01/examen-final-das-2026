@@ -33,6 +33,27 @@ const connect = async () => {
         setTimeout(connect, 5000);
     }
 };
+//-----David : funcion para que notifique si el canal esta conectado o no
+const publishTrackingEventStatus = async (payload) => {
+    if (!channel) {
+        console.warn(`[MS_Tutorias] No se pudo publicar en el exchange de tracking: canal RabbitMQ no disponible.`);
+        return false;
+    }
+    try {
+        const messageBuffer = Buffer.from(JSON.stringify(payload));
+        channel.publish(EXCHANGE_NAME, '', messageBuffer);
+        console.log(`[MS_Tutorias] Evento de tracking publicado:`, payload.message);
+        return true;
+    } catch (error) {
+        console.error(`[MS_Tutorias] Error al publicar evento de tracking:`, error.message);
+        return false;
+    }
+}
+
+//---------------------------------
+
+
+
 
 // connect(); // Removed auto-connect to allow better control and testing
 
@@ -40,8 +61,27 @@ const connect = async () => {
 // Retorna true/false para que callers como el poller del outbox (D2) puedan distinguir éxito de
 // fallo y decidir si reintentar -- antes no retornaba nada útil en ningún camino.
 const publishToQueue = async (queueName, messagePayload) => {
+
+    //David: se agrega const para que se pueda loguear el correlationId en caso de que no venga en el payload
+    const cid = messagePayload?.correlationId || 'No hay correlationId';
+
     if (!channel) {
-        console.warn(`[MS_Tutorias] No se pudo publicar en '${queueName}': canal RabbitMQ no disponible.`);
+
+        //David: se agrega const MensajeFalla para que se loguee el mensaje de falla con el correlationId 
+
+        const MensajeFalla = `[MS_Tutorias] No se pudo publicar en '${queueName}' (correlationId: ${cid}): canal RabbitMQ no disponible.`;
+        console.warn('[MS_Tutorias]', MensajeFalla);
+
+        //Dvid: se agrega la funcion publishTrackingEventStatus para que se 
+        // publique en el exchange de tracking el error al publicar en la cola
+
+        publishTrackingEventStatus({
+            servicio: 'MS_Tutorias',
+            message: MensajeFalla, cid,
+            timestamp: new Date(),
+            status: 'ERROR'
+        });
+
         return false;
     }
     try {
@@ -59,20 +99,30 @@ const publishToQueue = async (queueName, messagePayload) => {
         // (ack) o rechaza (nack) el mensaje -- ya no asumimos éxito con solo haberlo escrito en el
         // socket TCP, que es lo que podía marcar una fila del outbox como PUBLICADO sin que
         // RabbitMQ la hubiera persistido/ruteado realmente.
-        await new Promise((resolve, reject) => {
-            channel.sendToQueue(queueName, messageBuffer, { persistent: true }, (err) => {
-                if (err) reject(err); else resolve();
-            });
-        });
+
+        //david :
+        channel.sendToQueue(queueName, messageBuffer, { persistent: true });
+        await channel.waitForConfirms(); // Espera a que el broker confirme la recepción del mensaje
+
         console.log(`[MS_Tutorias] Mensaje publicado y confirmado por el broker en la cola '${queueName}'`);
         return true;
     } catch (error) {
-        console.error(`[MS_Tutorias] Error al publicar en cola:`, error.message);
+
+        const MensajeFalla = `[MS_Tutorias] Error al publicar en '${queueName}' (correlationId: ${cid}): ${error.message}`;
+        console.error('[MS_Tutorias]', MensajeFalla);
+
+        publishTrackingEventStatus({
+            service: 'MS_Tutorias',
+            message: MensajeFalla, cid,
+            timestamp: new Date(),
+            status: 'ERROR'
+        });
+
         return false;
     }
 };
 
-// --- NUEVA FUNCIÓN ---
+/*
 // Función para publicar en un EXCHANGE (para tracking)
 const publishTrackingEvent = async (payload) => {
     if (!channel) { return; }
@@ -85,6 +135,8 @@ const publishTrackingEvent = async (payload) => {
         console.error(`[MS_Tutorias] Error al publicar evento de tracking:`, error.message);
     }
 };
+*/
+
 
 module.exports = {
     connect,

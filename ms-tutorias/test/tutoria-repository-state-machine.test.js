@@ -17,7 +17,10 @@ require.cache[dbPath] = {
     loaded: true,
     exports: {
         query: (text, params) => queryImpl(text, params),
-        withTransaction: async (callback) => callback(fakeClient)
+        withTransaction: async (callback) => callback(fakeClient),
+        // S6: reconciliarPendientesViejas usa el pool reservado para workers de fondo -- reusa el
+        // mismo queryImpl falso para que los tests existentes de esa función no cambien.
+        workerQuery: (text, params) => queryImpl(text, params)
     }
 };
 
@@ -216,4 +219,36 @@ test('save() con compensacionPendiente NO inserta en compensaciones_pendientes s
     // Mismo punto crítico que para el outbox: si el UPDATE no afectó ninguna fila, no debe quedar
     // un registro de compensación pendiente huérfano para una tutoría que ni llegó a FALLIDA.
     assert.ok(queries.every((q) => !/INSERT INTO compensaciones_pendientes/.test(q.text)));
+});
+
+test('reconciliarPendientesViejas (S2) solo apunta a los orígenes válidos para FALLIDA, no a PENDIENTE hardcodeado', async () => {
+    const queries = [];
+    queryImpl = async (text, params) => {
+        queries.push({ text, params });
+        return { rows: [{ idtutoria: 'tutoria-vieja', idtutor: 't1' }] };
+    };
+
+    const fechaCorte = new Date('2026-01-01T00:00:00.000Z');
+    const filas = await tutoriaRepository.reconciliarPendientesViejas(fechaCorte, 20);
+
+    assert.equal(filas.length, 1);
+    assert.equal(queries.length, 1);
+    assert.match(queries[0].text, /estado = ANY\(\$1\)/);
+    assert.match(queries[0].text, /createdAt < \$2/);
+    assert.deepEqual(queries[0].params, [['PENDIENTE'], fechaCorte, 20]);
+});
+
+test('findByEstudiante filtra por idEstudiante', async () => {
+    const queries = [];
+    queryImpl = async (text, params) => {
+        queries.push({ text, params });
+        return { rows: [{ idtutoria: 'tutoria-1', idestudiante: 'student-1' }] };
+    };
+
+    const filas = await tutoriaRepository.findByEstudiante('student-1');
+
+    assert.equal(filas.length, 1);
+    assert.equal(queries.length, 1);
+    assert.match(queries[0].text, /WHERE idEstudiante = \$1/);
+    assert.deepEqual(queries[0].params, ['student-1']);
 });

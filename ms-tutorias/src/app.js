@@ -12,6 +12,8 @@ const promBundle = require("express-prom-bundle");
 const messageProducer = require('./infrastructure/messaging/message.producer');
 const outboxPublisher = require('./infrastructure/messaging/outbox.publisher');
 const compensacionWorker = require('./infrastructure/workers/compensacion.worker');
+const reconciliacionWorker = require('./infrastructure/workers/reconciliacion.worker');
+require('./infrastructure/observability/backlog.metrics'); // S7: gauges de backlog, se auto-registran en prom-client al cargar
 
 const app = express();
 
@@ -46,14 +48,34 @@ app.use('/v1/tutorias', tutoriasRouter);
 app.use(errorHandler);
 
 // Iniciar el servidor
-// Iniciar el servidor
 if (require.main === module) {
-    app.listen(config.port, () => {
+    const server = app.listen(config.port, () => {
         console.log(`MS_Tutorias (Orquestador) escuchando en el puerto ${config.port}`);
         messageProducer.connect(); // Iniciar la conexión al RabbitMQ
         outboxPublisher.start(); // Poller del patrón outbox (D2)
         compensacionWorker.start(); // Worker de reintentos de compensación de agenda (D6)
+        reconciliacionWorker.start(); // Worker de reconciliación de tutorías PENDIENTE huérfanas (S2)
     });
+
+    // S3: antes de esto, un SIGTERM (docker compose down, redeploy) mataba el proceso a mitad de
+    // un tick de cualquiera de los tres workers -- stop() existía en los tres pero nada en
+    // producción lo llamaba. Se detienen los pollers primero (dejan de reclamar trabajo nuevo) y
+    // luego se cierra el servidor HTTP (deja de aceptar conexiones nuevas y drena las que ya
+    // estaban en curso). No espera a que un tick de worker ya en marcha termine -- solo evita que
+    // arranque uno nuevo; el guard `isRunning` de cada worker protege esa carrera.
+    const shutdown = (signal) => {
+        console.log(`[MS_Tutorias] ${signal} recibido, iniciando apagado ordenado...`);
+        outboxPublisher.stop();
+        compensacionWorker.stop();
+        reconciliacionWorker.stop();
+        server.close(() => {
+            console.log('[MS_Tutorias] Servidor HTTP cerrado.');
+            process.exit(0);
+        });
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 module.exports = app;

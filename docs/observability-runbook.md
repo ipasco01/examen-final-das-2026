@@ -227,6 +227,7 @@ Completar una fila por cada caso ejecutado.
 
 - **Trazas distribuidas:** no se observa OpenTelemetry, Jaeger, Tempo ni Zipkin; `X-Correlation-ID` no reemplaza trazas con spans.
 - **Alertas:** existe una regla de alerta evaluada por Prometheus (`alert_rules.yml`, `CompensacionAgendaFallida`, dispara si `compensacion_fallida_total` incrementa en los últimos 5 minutos) visible en `/alerts` de Prometheus. **No hay Alertmanager** en este entorno, así que la alerta no se enruta a ningún canal de notificación (email/Slack/etc.) — solo queda visible en la UI de Prometheus.
+- **Resuelto (S7):** el poller de outbox no tenía ninguna métrica propia, y ninguno de los dos backlogs (`tutorias_notificaciones_outbox`, `compensaciones_pendientes`) era visible como gauge — un backlog que crecía lentamente era indistinguible de estado estable. Ahora `ms-tutorias` expone `outbox_publicacion_total{resultado}` (Counter) y dos gauges, `outbox_notificaciones_backlog` y `compensaciones_pendientes_backlog` (filas `PENDIENTE` al momento del scrape), en `GET /metrics`.
 - **SLOs:** no hay objetivos formales de disponibilidad, latencia, tasa de error ni ventanas de medición.
 - **Retención:** no se documenta retención de logs, métricas, eventos ni mensajes de DLQ.
 - **Logs centralizados:** los logs dependen de salida de servicios; no se observa agregación centralizada ni búsqueda histórica.
