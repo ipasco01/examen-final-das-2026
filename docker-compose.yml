@@ -303,6 +303,9 @@ services:
   # --- MONITORIZACIÓN ---
   tempo:
     image: grafana/tempo:latest
+    # Equipo 5: servicio incorporado por el Equipo 4 sin politica de reinicio. Sin esto, si el
+    # proceso muere el contenedor queda caido y se pierde la traza distribuida en silencio.
+    restart: unless-stopped
     container_name: tempo
     user: "0:0"
     command: ["-config.file=/etc/tempo.yaml"]
@@ -313,6 +316,9 @@ services:
       - "3200:3200"
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
+    # Equipo 5: servicio incorporado por el Equipo 4 sin politica de reinicio. Sin esto, si el
+    # proceso muere el contenedor queda caido y se pierde la traza distribuida en silencio.
+    restart: unless-stopped
     container_name: otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:

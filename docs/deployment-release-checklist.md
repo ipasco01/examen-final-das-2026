@@ -146,11 +146,30 @@ confuso.
 
 ---
 
+## La deuda vuelve sola: evidencia del 18/07
+
+Al mergear `main` en la rama, el merge trajo dos servicios nuevos del Equipo 4 — `tempo` y
+`otel-collector` — **sin `restart` y con `:latest`**. Son exactamente las dos deudas que este PR
+habia cerrado (issues 2 y 6), reintroducidas por otro equipo en un solo merge.
+
+No es un reproche al Equipo 4: cada equipo agrega servicios pensando en su zona, no en la
+operacion. Es la demostracion medida de que **sin un check automatico la deuda de deployment
+reaparece en cada merge**. Convierte el backlog #2 (CI de validacion) de recomendacion teorica en
+hecho observado.
+
+Chequeo minimo que lo habria detectado antes del merge:
+
+```bash
+docker compose config | grep -E "image:.*:latest"          # debe devolver vacio
+python -c "import yaml;d=yaml.safe_load(open('docker-compose.yml'));print([n for n,s in d['services'].items() if 'restart' not in s])"
+```
+
 ## Deuda abierta (backlog priorizado)
 
 | # | Pendiente | Atributo en riesgo |
 |---|---|---|
-| 1 | Paridad compose ↔ K8s: faltan `prometheus`, `grafana`, `toxiproxy`, `client-sim`, `tracking-dashboard` en manifiestos | Observabilidad |
+| 0 | **Fijar `tempo` y `otel-collector` por digest** (hoy en `:latest`). Comando: `docker image inspect grafana/tempo:latest --format "{{index .RepoDigests 0}}"`. No se fijo a ciegas: elegir una version sin verificar que la imagen levante seria un cambio sin validacion | Reproducibilidad |
+| 1 | Paridad compose ↔ K8s: compose tiene **17** servicios, K8s cubre 10. Faltan `prometheus`, `grafana`, `toxiproxy`, `client-sim`, `tracking-dashboard`, y ahora tambien `tempo` y `otel-collector` | Observabilidad |
 | 2 | CI que valide `docker compose config` y `kubectl apply --dry-run` en cada PR | Reproducibilidad |
 | 3 | `/health` propio en ms-tutorias, separado de `/metrics` (hoy la probe depende del endpoint de Prometheus, y ese servicio corre 3 workers de fondo) | Disponibilidad |
 | 4 | ConfigMap para la configuración no secreta (hoy duplicada en cada Deployment) | Reproducibilidad |
