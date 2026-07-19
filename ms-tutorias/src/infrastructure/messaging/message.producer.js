@@ -141,7 +141,13 @@ const publishTrackingEvent = async (payload) => {
 module.exports = {
     connect,
     publishToQueue,
-    // Alias: la función original fue comentada y reemplazada por publishTrackingEventStatus;
-    // los consumidores (tutoria.service, clients, workers) siguen importando publishTrackingEvent.
-    publishTrackingEvent: publishTrackingEventStatus
+    // Fix (Equipo 5, detectado al levantar el stack tras el merge de main):
+    // 'publishTrackingEvent' quedo comentado mas arriba al introducirse
+    // 'publishTrackingEventStatus', pero el export y los 4 consumidores del modulo
+    // (tutoria.service, agenda.client, usuarios.client, reconciliacion.worker) siguen usando el
+    // nombre viejo -> ReferenceError al cargar el modulo y ms-tutorias en CrashLoopBackOff.
+    // Se expone la implementacion nueva bajo el nombre que consume el resto del codigo: misma
+    // firma y mismo exchange, ademas verifica el canal y devuelve true/false.
+    publishTrackingEvent: publishTrackingEventStatus,
+    publishTrackingEventStatus
 };

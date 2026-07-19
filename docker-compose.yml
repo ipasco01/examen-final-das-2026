@@ -1,9 +1,31 @@
 # docker-compose.yml
+#
+# Cambios del Equipo 5 (Deployment) — issue "Arranque ordenado y auto-recuperación":
+#   - restart: unless-stopped en todos los servicios (auto-recuperación ante caídas).
+#   - healthcheck en las 4 bases de datos y RabbitMQ.
+#   - depends_on con condition: service_healthy para eliminar la carrera de arranque.
+#   - Imágenes de Prometheus y Grafana fijadas a versión (reproducibilidad; eran :latest).
+#   - Sincronización de variables (drift): ms-auth recibía cero variables de BD (su db.js caía a
+#     localhost) y ms-usuarios/ms-agenda validan JWT en su middleware pero no recibían JWT_SECRET.
 
 services:
   # --- Servicio de Autenticación ---
   ms-auth:
+    # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
+    # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
+    # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:4000/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     build: ./ms-auth
+    # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
+    # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
+    # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
+    image: ghcr.io/elcbas/ms-auth:${IMAGE_TAG:-0ab70dc}
+    restart: unless-stopped
     ports:
       - "4000:4000" # Mapea el puerto 4000 de tu máquina al 4000 del contenedor
     environment:
@@ -11,16 +33,33 @@ services:
       - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
       - JWT_EXPIRES_IN=1h
       - SERVICE_NAME=MS_Auth
-      # VARIABLES PARA LA BD (faltaban)
+      # --- VARIABLES PARA LA BD (Equipo 5: faltaban; db.js caía al default localhost) ---
       - DB_HOST=db-auth
       - DB_PORT=5432
       - DB_USER=user_auth
       - DB_PASSWORD=${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_auth
+    depends_on:
+      db-auth:
+        condition: service_healthy
 
   # --- Servicio de Usuarios ---
   ms-usuarios:
+    # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
+    # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
+    # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3001/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     build: ./ms-usuarios
+    # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
+    # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
+    # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
+    image: ghcr.io/elcbas/ms-usuarios:${IMAGE_TAG:-0ab70dc}
+    restart: unless-stopped
     ports:
       - "3001:3001"
     environment:
@@ -33,16 +72,33 @@ services:
       - DB_NAME=db_usuarios
       - SERVICE_NAME=MS_Usuarios
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
-      # Necesario para validar los JWT emitidos por ms-auth (mismo secreto)
+      # Equipo 5: el middleware JWT agregado por el Equipo 3 necesita este secreto (config/index.js
+      # no define default para jwtSecret; sin esta variable, toda validación de token fallaría).
       - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
     depends_on:
-      # Asegura que la BD inicie antes que el servicio
-      - db-usuarios
-      - rabbitmq
+      # Espera a que la BD y el broker estén SANOS, no solo encendidos (elimina la carrera de arranque)
+      db-usuarios:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   # --- Servicio de Agenda ---
   ms-agenda:
+    # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
+    # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
+    # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3002/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     build: ./ms-agenda
+    # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
+    # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
+    # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
+    image: ghcr.io/elcbas/ms-agenda:${IMAGE_TAG:-0ab70dc}
+    restart: unless-stopped
     ports:
       - "3002:3002"
     environment:
@@ -55,17 +111,19 @@ services:
       - DB_NAME=db_agenda
       - SERVICE_NAME=MS_Agenda
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
-      # Necesario para validar los JWT emitidos por ms-auth (mismo secreto)
+      # Equipo 5: mismo caso que ms-usuarios — el middleware JWT del Equipo 3 requiere el secreto.
       - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
     depends_on:
-      # Depende de su propia BD
-      - db-agenda
-      - rabbitmq
+      db-agenda:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   # --- Servicio de Message Broker ---
   rabbitmq:
     image: rabbitmq:3.13-management-alpine # Imagen con interfaz de gestión
     container_name: rabbitmq
+    restart: unless-stopped
     ports:
       - "5672:5672" # Puerto AMQP para los servicios
       - "15672:15672" # Puerto para la interfaz web de gestión
@@ -74,10 +132,30 @@ services:
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq/
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
 
   # --- Servicio de Notificaciones ---
   ms-notificaciones:
+    # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
+    # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
+    # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3003/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     build: ./ms-notificaciones
+    # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
+    # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
+    # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
+    image: ghcr.io/elcbas/ms-notificaciones:${IMAGE_TAG:-0ab70dc}
+    restart: unless-stopped
     ports:
       - "3003:3003"
     environment:
@@ -85,12 +163,14 @@ services:
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
       - SERVICE_NAME=MS_Notificaciones
     depends_on:
-      - rabbitmq # Asegura que RabbitMQ inicie antes que este servicio
+      rabbitmq:
+        condition: service_healthy # Espera a que RabbitMQ responda, no solo a que arranque
 
   # --- Proxy para Chaos Engineering ---
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.5.0
     container_name: toxiproxy
+    restart: unless-stopped
     command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
     ports:
       - "8474:8474" # API de control
@@ -98,11 +178,26 @@ services:
     volumes:
       - ./toxiproxy.json:/config/toxiproxy.json:ro
     depends_on:
-      - ms-usuarios
+      ms-usuarios:
+        condition: service_started
 
   # --- Servicio de Tutorías (El Orquestador) ---
   ms-tutorias:
+    # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
+    # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
+    # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     build: ./ms-tutorias
+    # Equipo 5: el build se etiqueta con la MISMA imagen que publicamos en GHCR y que
+    # referencian los manifiestos de K8s. Asi compose, el push y el cluster corren el
+    # mismo artefacto: se elimina el drift entre entornos. IMAGE_TAG = SHA corto del commit.
+    image: ghcr.io/elcbas/ms-tutorias:${IMAGE_TAG:-0ab70dc}
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
@@ -125,18 +220,35 @@ services:
       - SERVICE_NAME=MS_Tutorias
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
     depends_on:
-      - ms-auth
-      - ms-usuarios
-      - ms-agenda
-      - ms-notificaciones
-      - db-tutorias
-      - rabbitmq # Asegura que RabbitMQ inicie antes que este servicio
-      - toxiproxy # Permite enrutar ms-usuarios mediante el proxy de chaos
+      ms-auth:
+        condition: service_started
+      ms-usuarios:
+        condition: service_started
+      ms-agenda:
+        condition: service_started
+      ms-notificaciones:
+        condition: service_started
+      db-tutorias:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy # El broker sano antes de publicar eventos
+      toxiproxy:
+        condition: service_started # Permite enrutar ms-usuarios mediante el proxy de chaos
 
   # --- Cliente Web Interactivo ---
   client-sim:
+    # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
+    # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
+    # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     build: ./client-mobile-sim
     container_name: client_sim_web
+    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
@@ -145,25 +257,39 @@ services:
       - API_BASE_URL=http://ms-tutorias:3000
       - AUTH_SERVICE_URL=http://ms-auth:4000/auth
     depends_on:
-      - ms-auth
-      - ms-tutorias
+      ms-auth:
+        condition: service_started
+      ms-tutorias:
+        condition: service_started
 
   # --- Dashboard de Trazabilidad ---
   tracking-dashboard:
+    # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
+    # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
+    # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     build: ./tracking-dashboard
     container_name: tracking_dashboard
+    restart: unless-stopped
     ports:
       - "9000:9000"
     environment:
       - PORT=9000
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:?Definí RABBITMQ_DEFAULT_USER en tu .env raíz}:${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}@rabbitmq:5672
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
 
   # --- Servicio de Base de Datos PostgreSQL ---
   db-auth:
     image: postgres:14-alpine
     container_name: db_auth_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user_auth
       POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en tu .env raíz}
@@ -172,10 +298,21 @@ services:
       - "5435:5432" # Puerto propio para evitar conflicto con las demás BD (5432-5434)
     volumes:
       - postgres_data_auth:/var/lib/postgresql/data
+      # Equipo 5: esquema versionado y ejecutable. Postgres corre todo .sql de
+      # /docker-entrypoint-initdb.d/ en la PRIMERA inicializacion del volumen, asi que un
+      # 'down -v' o un clon nuevo del repo ya no dejan la base sin tablas.
+      - ./docker/init/auth:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_auth -d db_auth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   db-usuarios:
     image: postgres:14-alpine # Usamos una imagen oficial de PostgreSQL
     container_name: db_usuarios_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user_usuarios # Define el usuario de la BD
       POSTGRES_PASSWORD: ${USUARIOS_DB_PASSWORD:?Definí USUARIOS_DB_PASSWORD en tu .env raíz}
@@ -184,10 +321,21 @@ services:
       - "5432:5432" # Expone el puerto 5432 en el host y 5432 para el Postgres dentro del contenedor
     volumes:
       - postgres_data_usuarios:/var/lib/postgresql/data # Persiste los datos fuera del contenedor
+      # Equipo 5: esquema versionado y ejecutable. Postgres corre todo .sql de
+      # /docker-entrypoint-initdb.d/ en la PRIMERA inicializacion del volumen, asi que un
+      # 'down -v' o un clon nuevo del repo ya no dejan la base sin tablas.
+      - ./docker/init/usuarios:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_usuarios -d db_usuarios"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   db-agenda:
     image: postgres:14-alpine
     container_name: db_agenda_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user_agenda
       POSTGRES_PASSWORD: ${AGENDA_DB_PASSWORD:?Definí AGENDA_DB_PASSWORD en tu .env raíz}
@@ -196,10 +344,21 @@ services:
       - "5433:5432" # Mapeamos al puerto 5433 en el host para evitar conflicto con db-usuarios (5432)
     volumes:
       - postgres_data_agenda:/var/lib/postgresql/data
+      # Equipo 5: esquema versionado y ejecutable. Postgres corre todo .sql de
+      # /docker-entrypoint-initdb.d/ en la PRIMERA inicializacion del volumen, asi que un
+      # 'down -v' o un clon nuevo del repo ya no dejan la base sin tablas.
+      - ./docker/init/agenda:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_agenda -d db_agenda"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   db-tutorias:
     image: postgres:14-alpine
     container_name: db_tutorias_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user_tutorias
       POSTGRES_PASSWORD: ${TUTORIAS_DB_PASSWORD:?Definí TUTORIAS_DB_PASSWORD en tu .env raíz}
@@ -208,59 +367,114 @@ services:
       - "5434:5432" # Se mapea el puerto 5434 en el host para evitar conflicto con db-usuarios (5432)
     volumes:
       - postgres_data_tutorias:/var/lib/postgresql/data
+      # Equipo 5: esquema versionado y ejecutable. Postgres corre todo .sql de
+      # /docker-entrypoint-initdb.d/ en la PRIMERA inicializacion del volumen, asi que un
+      # 'down -v' o un clon nuevo del repo ya no dejan la base sin tablas.
+      - ./docker/init/tutorias:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_tutorias -d db_tutorias"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # --- MONITORIZACIÓN ---
   # --- MONITORIZACIÓN ---
   tempo:
-    image: grafana/tempo:latest
+    # Version fijada por el Equipo 4 (2.5.0): corresponde a su tempo.yaml con wal y compactor.
+    # Se prefiere su tag explicito antes que el digest de :latest que habiamos fijado, porque la
+    # configuracion nueva esta escrita y probada contra esta version.
+    image: grafana/tempo:2.5.0
+    # Equipo 5: politica de reinicio. Sin esto, si el proceso muere el contenedor queda caido y
+    # se pierde la traza distribuida en silencio.
+    restart: unless-stopped
     container_name: tempo
     user: "0:0"
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
-      - ./tempo.yaml:/etc/tempo.yaml
+      - ./tempo.yaml:/etc/tempo.yaml:ro
       - tempo_data:/tmp/tempo
     ports:
       - "3200:3200"
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    # Version fijada por el Equipo 4 (0.108.0). Mismo criterio que tempo: su tag explicito.
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    # Equipo 5: politica de reinicio.
+    restart: unless-stopped
     container_name: otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
       - "4317:4317"
       - "4318:4318"
     depends_on:
       - tempo
   prometheus:
-    image: prom/prometheus:latest
+    # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
+    # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
+    # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Equipo 5: versión fijada (era :latest, build no reproducible)
+    image: prom/prometheus:v2.53.0
     container_name: prometheus
+    restart: unless-stopped
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - ./alert_rules.yml:/etc/prometheus/alert_rules.yml
     ports:
       - "9091:9090"
     depends_on:
-      - ms-tutorias # Esperar a que al menos uno arranque
+      ms-tutorias:
+        condition: service_started # Esperar a que al menos uno arranque
 
   grafana:
-    image: grafana/grafana:latest
+    # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
+    # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
+    # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Equipo 5: versión fijada (era :latest, build no reproducible)
+    image: grafana/grafana:11.1.0
     container_name: grafana
+    restart: unless-stopped
     ports:
       - "3005:3000" # Mapeamos al 3005 para no chocar con ms-tutorias (3000)
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-local-dev-admin} # Contraseña inicial local
+      # Equipo 5: restaurada la guarda del Equipo 3. Con ':-local-dev-admin' Grafana levantaba con
+      # una password conocida y publicada en el repo si nadie definia la variable. Con ':?' el
+      # compose se niega a arrancar: falla ruidosamente en vez de quedar inseguro en silencio.
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Definí GRAFANA_ADMIN_PASSWORD en tu .env raíz}
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
     depends_on:
-      - prometheus
-      - loki
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
 
-#logs centralizados (loki + Promtail)
-
+  # --- LOGS CENTRALIZADOS (Loki + Promtail) — Equipo 4 ---
   loki:
     image: grafana/loki:2.9.4
     container_name: loki
+    # Equipo 5: politica de reinicio y healthcheck. Si Loki cae, Promtail sigue leyendo logs y los
+    # descarta: se pierden sin error visible. /ready es el endpoint de readiness de Loki.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     ports:
       - "3100:3100" # API de Loki (para pegar "queries" directo)
     command: -config.file=/etc/loki/local-config.yaml
@@ -268,6 +482,7 @@ services:
   promtail:
     image: grafana/promtail:2.9.4
     container_name: promtail
+    restart: unless-stopped
     volumes:
       # Necesita leer el socket de Docker para descubrir qué contenedores existen,
       # y la carpeta donde Docker guarda los logs (driver json-file, el default).
@@ -276,30 +491,10 @@ services:
       - ./promtail-config.yaml:/etc/promtail/config.yml:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:
-      - loki
-
-  # --- Trazas distribuidas (OTel Collector + Tempo) ---
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.108.0
-    container_name: otel-collector
-    command: ["--config=/etc/otel-collector-config.yaml"]
-    volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    ports:
-      - "4317:4317" # OTLP gRPC: los microservicios apuntan acá (OTEL_EXPORTER_OTLP_ENDPOINT)
-      - "4318:4318" # OTLP HTTP: alternativa al gRPC, útil para probar con curl
-    depends_on:
-      - tempo
-
-  tempo:
-    image: grafana/tempo:2.5.0
-    container_name: tempo
-    command: ["-config.file=/etc/tempo.yaml"]
-    volumes:
-      - ./tempo.yaml:/etc/tempo.yaml:ro
-      - tempo_data:/tmp/tempo
-    ports:
-      - "3200:3200" # API HTTP: Grafana consulta las trazas acá
+      # Equipo 5: espera a que Loki este SANO, no solo encendido. Si Promtail arranca antes, los
+      # primeros logs se pierden porque el destino todavia no acepta escrituras.
+      loki:
+        condition: service_healthy
 
 # --- Definición de Volúmenes ---
 volumes:
