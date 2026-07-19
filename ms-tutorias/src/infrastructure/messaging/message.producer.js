@@ -141,5 +141,7 @@ const publishTrackingEvent = async (payload) => {
 module.exports = {
     connect,
     publishToQueue,
-    publishTrackingEvent // <-- Exportar la nueva función
+    // Alias: la función original fue comentada y reemplazada por publishTrackingEventStatus;
+    // los consumidores (tutoria.service, clients, workers) siguen importando publishTrackingEvent.
+    publishTrackingEvent: publishTrackingEventStatus
 };
