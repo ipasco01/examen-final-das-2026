@@ -36,4 +36,18 @@ COPY --from=builder /usr/src/app ./
 EXPOSE 3000
 
 # El comando que se ejecutará cuando el contenedor inicie.
+
+# --- Equipo 5 (D4 de la auditoria): endurecimiento del runtime ---
+# 1) HEALTHCHECK: hasta ahora la salud solo estaba declarada en docker-compose.yml y en los
+#    manifiestos de K8s. Al vivir en la imagen, cualquiera que la corra con 'docker run' -- sin
+#    compose y sin cluster -- obtiene el mismo criterio de "esta sano". La definicion de salud
+#    viaja con el artefacto, no con el orquestador.
+# 2) USER node: 'node' (uid 1000) ya existe en las imagenes oficiales. Sin esta linea el proceso
+#    corre como root dentro del contenedor: si alguien logra ejecucion remota, la logra como root.
+#    La app solo necesita leer su codigo y abrir un puerto > 1024, asi que no pierde nada.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget -q -O- http://localhost:${PORT:-3000}/metrics || exit 1
+
+USER node
+
 CMD ["node", "src/app.js"]
