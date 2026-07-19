@@ -302,7 +302,9 @@ services:
   # --- MONITORIZACIÓN ---
   # --- MONITORIZACIÓN ---
   tempo:
-    image: grafana/tempo:latest
+    # Equipo 5: fijada por digest (era :latest). Un digest es inmutable: nadie puede republicar
+    # contenido distinto bajo el mismo sha256. Verificada localmente antes de fijarla.
+    image: grafana/tempo@sha256:1ce31d6d7ffab62189685e8c47881d4a561c5d38bd0dbd66e40ca83cef07923d
     # Equipo 5: servicio incorporado por el Equipo 4 sin politica de reinicio. Sin esto, si el
     # proceso muere el contenedor queda caido y se pierde la traza distribuida en silencio.
     restart: unless-stopped
@@ -315,7 +317,9 @@ services:
     ports:
       - "3200:3200"
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    # Equipo 5: fijada por digest (era :latest). Un digest es inmutable: nadie puede republicar
+    # contenido distinto bajo el mismo sha256. Verificada localmente antes de fijarla.
+    image: otel/opentelemetry-collector-contrib@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108
     # Equipo 5: servicio incorporado por el Equipo 4 sin politica de reinicio. Sin esto, si el
     # proceso muere el contenedor queda caido y se pierde la traza distribuida en silencio.
     restart: unless-stopped
