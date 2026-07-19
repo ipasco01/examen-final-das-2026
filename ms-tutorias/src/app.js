@@ -8,6 +8,7 @@ const config = require('./config'); // Importamos nuestra configuración central
 const tutoriasRouter = require('./api/routes/tutorias.routes');
 const errorHandler = require('./api/middlewares/errorHandler'); // El manejador de errores reutilizable
 const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
+const requestLogger = require('./api/middlewares/requestLogger.js');
 const promBundle = require("express-prom-bundle");
 const messageProducer = require('./infrastructure/messaging/message.producer');
 const outboxPublisher = require('./infrastructure/messaging/outbox.publisher');
@@ -38,6 +39,7 @@ app.use(metricsMiddleware);
 // Middlewares esenciales
 app.use(express.json()); // Permite al servidor entender y procesar bodies en formato JSON
 app.use(correlationIdMiddleware); // Añadimos el middleware de correlationIdMiddleware
+app.use(requestLogger);
 
 // Enrutamiento principal
 // Cualquier petición a "/v1/tutorias" será gestionada por nuestro router.

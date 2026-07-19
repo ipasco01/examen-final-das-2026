@@ -249,9 +249,57 @@ services:
     ports:
       - "3005:3000" # Mapeamos al 3005 para no chocar con ms-tutorias (3000)
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Definí GRAFANA_ADMIN_PASSWORD en tu .env raíz}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-local-dev-admin} # Contraseña inicial local
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
     depends_on:
       - prometheus
+      - loki
+
+#logs centralizados (loki + Promtail)
+
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: loki
+    ports:
+      - "3100:3100" # API de Loki (para pegar "queries" directo)
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: promtail
+    volumes:
+      # Necesita leer el socket de Docker para descubrir qué contenedores existen,
+      # y la carpeta donde Docker guarda los logs (driver json-file, el default).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./promtail-config.yaml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+  # --- Trazas distribuidas (OTel Collector + Tempo) ---
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC: los microservicios apuntan acá (OTEL_EXPORTER_OTLP_ENDPOINT)
+      - "4318:4318" # OTLP HTTP: alternativa al gRPC, útil para probar con curl
+    depends_on:
+      - tempo
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/tmp/tempo
+    ports:
+      - "3200:3200" # API HTTP: Grafana consulta las trazas acá
 
 # --- Definición de Volúmenes ---
 volumes:
