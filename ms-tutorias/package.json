@@ -12,6 +12,8 @@
   "author": "edsaana",
   "license": "ISC",
   "dependencies": {
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
     "amqplib": "^0.10.9",
     "axios": "^1.13.1",
     "cors": "^2.8.5",

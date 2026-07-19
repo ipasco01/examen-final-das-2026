@@ -235,6 +235,10 @@ services:
       - "5435:5432" # Puerto propio para evitar conflicto con las demás BD (5432-5434)
     volumes:
       - postgres_data_auth:/var/lib/postgresql/data
+      # Equipo 5: esquema versionado y ejecutable. Postgres corre todo .sql de
+      # /docker-entrypoint-initdb.d/ en la PRIMERA inicializacion del volumen, asi que un
+      # 'down -v' o un clon nuevo del repo ya no dejan la base sin tablas.
+      - ./docker/init/auth:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user_auth -d db_auth"]
       interval: 10s
@@ -254,6 +258,10 @@ services:
       - "5432:5432" # Expone el puerto 5432 en el host y 5432 para el Postgres dentro del contenedor
     volumes:
       - postgres_data_usuarios:/var/lib/postgresql/data # Persiste los datos fuera del contenedor
+      # Equipo 5: esquema versionado y ejecutable. Postgres corre todo .sql de
+      # /docker-entrypoint-initdb.d/ en la PRIMERA inicializacion del volumen, asi que un
+      # 'down -v' o un clon nuevo del repo ya no dejan la base sin tablas.
+      - ./docker/init/usuarios:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user_usuarios -d db_usuarios"]
       interval: 10s
@@ -273,6 +281,10 @@ services:
       - "5433:5432" # Mapeamos al puerto 5433 en el host para evitar conflicto con db-usuarios (5432)
     volumes:
       - postgres_data_agenda:/var/lib/postgresql/data
+      # Equipo 5: esquema versionado y ejecutable. Postgres corre todo .sql de
+      # /docker-entrypoint-initdb.d/ en la PRIMERA inicializacion del volumen, asi que un
+      # 'down -v' o un clon nuevo del repo ya no dejan la base sin tablas.
+      - ./docker/init/agenda:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user_agenda -d db_agenda"]
       interval: 10s
@@ -292,6 +304,10 @@ services:
       - "5434:5432" # Se mapea el puerto 5434 en el host para evitar conflicto con db-usuarios (5432)
     volumes:
       - postgres_data_tutorias:/var/lib/postgresql/data
+      # Equipo 5: esquema versionado y ejecutable. Postgres corre todo .sql de
+      # /docker-entrypoint-initdb.d/ en la PRIMERA inicializacion del volumen, asi que un
+      # 'down -v' o un clon nuevo del repo ya no dejan la base sin tablas.
+      - ./docker/init/tutorias:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user_tutorias -d db_tutorias"]
       interval: 10s
@@ -302,31 +318,30 @@ services:
   # --- MONITORIZACIÓN ---
   # --- MONITORIZACIÓN ---
   tempo:
-    # Equipo 5: fijada por digest (era :latest). Un digest es inmutable: nadie puede republicar
-    # contenido distinto bajo el mismo sha256. Verificada localmente antes de fijarla.
-    image: grafana/tempo@sha256:1ce31d6d7ffab62189685e8c47881d4a561c5d38bd0dbd66e40ca83cef07923d
-    # Equipo 5: servicio incorporado por el Equipo 4 sin politica de reinicio. Sin esto, si el
-    # proceso muere el contenedor queda caido y se pierde la traza distribuida en silencio.
+    # Version fijada por el Equipo 4 (2.5.0): corresponde a su tempo.yaml con wal y compactor.
+    # Se prefiere su tag explicito antes que el digest de :latest que habiamos fijado, porque la
+    # configuracion nueva esta escrita y probada contra esta version.
+    image: grafana/tempo:2.5.0
+    # Equipo 5: politica de reinicio. Sin esto, si el proceso muere el contenedor queda caido y
+    # se pierde la traza distribuida en silencio.
     restart: unless-stopped
     container_name: tempo
     user: "0:0"
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
-      - ./tempo.yaml:/etc/tempo.yaml
+      - ./tempo.yaml:/etc/tempo.yaml:ro
       - tempo_data:/tmp/tempo
     ports:
       - "3200:3200"
   otel-collector:
-    # Equipo 5: fijada por digest (era :latest). Un digest es inmutable: nadie puede republicar
-    # contenido distinto bajo el mismo sha256. Verificada localmente antes de fijarla.
-    image: otel/opentelemetry-collector-contrib@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108
-    # Equipo 5: servicio incorporado por el Equipo 4 sin politica de reinicio. Sin esto, si el
-    # proceso muere el contenedor queda caido y se pierde la traza distribuida en silencio.
+    # Version fijada por el Equipo 4 (0.108.0). Mismo criterio que tempo: su tag explicito.
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    # Equipo 5: politica de reinicio.
     restart: unless-stopped
     container_name: otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
       - "4317:4317"
       - "4318:4318"
@@ -354,10 +369,51 @@ services:
     ports:
       - "3005:3000" # Mapeamos al 3005 para no chocar con ms-tutorias (3000)
     environment:
+      # Equipo 5: restaurada la guarda del Equipo 3. Con ':-local-dev-admin' Grafana levantaba con
+      # una password conocida y publicada en el repo si nadie definia la variable. Con ':?' el
+      # compose se niega a arrancar: falla ruidosamente en vez de quedar inseguro en silencio.
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Definí GRAFANA_ADMIN_PASSWORD en tu .env raíz}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
     depends_on:
       prometheus:
         condition: service_started
+      loki:
+        condition: service_started
+
+  # --- LOGS CENTRALIZADOS (Loki + Promtail) — Equipo 4 ---
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: loki
+    # Equipo 5: politica de reinicio y healthcheck. Si Loki cae, Promtail sigue leyendo logs y los
+    # descarta: se pierden sin error visible. /ready es el endpoint de readiness de Loki.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    ports:
+      - "3100:3100" # API de Loki (para pegar "queries" directo)
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: promtail
+    restart: unless-stopped
+    volumes:
+      # Necesita leer el socket de Docker para descubrir qué contenedores existen,
+      # y la carpeta donde Docker guarda los logs (driver json-file, el default).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./promtail-config.yaml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      # Equipo 5: espera a que Loki este SANO, no solo encendido. Si Promtail arranca antes, los
+      # primeros logs se pierden porque el destino todavia no acepta escrituras.
+      loki:
+        condition: service_healthy
 
 # --- Definición de Volúmenes ---
 volumes:

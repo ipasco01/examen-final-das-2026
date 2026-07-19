@@ -7,6 +7,7 @@ const config = require('./config');
 const notificacionesRouter = require('./api/routes/notificaciones.routes');
 const errorHandler = require('./api/middlewares/errorHandler'); // Reutilizamos el mismo middleware
 const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
+const requestLogger = require('./api/middlewares/requestLogger.js');
 const amqp = require('amqplib');
 const notificacionService = require('./domain/services/notificacion.service'); //  Importar el servicio de notificaciones
 const messageProducer = require('./infrastructure/messaging/message.producer'); // <-- IMPORTAR PRODUCTOR
@@ -35,6 +36,7 @@ app.use(metricsMiddleware);
 
 app.use(express.json());
 app.use(correlationIdMiddleware); // Middleware para manejar el Correlation ID
+app.use(requestLogger);
 app.use('/notificaciones', notificacionesRouter);
 
 app.use(errorHandler);

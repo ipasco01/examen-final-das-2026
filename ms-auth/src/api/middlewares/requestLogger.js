@@ -1,3 +1,6 @@
+// src/api/middlewares/requestLogger.js
+// Debe montarse DESPUES de correlationId.middleware.js, porque depende
+// de que req.correlationId ya exista.
 const pinoHttp = require('pino-http');
 const logger = require('../../config/logger');
 
