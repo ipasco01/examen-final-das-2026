@@ -80,9 +80,35 @@ ms-notificaciones 3003, ms-tutorias 3000.
 ## 3. Docker Compose
 
 - [ ] Los 19 servicios levantan con un solo `docker compose up -d`.
-- [ ] 15 de los 19 servicios llegan a `healthy` (no solo `Up`). Los 4 restantes -- `toxiproxy`,
-      `tempo`, `otel-collector`, `promtail` -- usan imagenes distroless sin shell: no pueden
-      ejecutar un `CMD-SHELL`. Anotado como deuda #3, no como olvido.
+- [ ] **17 de los 19** servicios llegan a `healthy` (no solo `Up`). Los 2 restantes --
+      `toxiproxy` y `otel-collector` -- no tienen shell en su imagen: **comprobado**, no supuesto.
+
+**Correccion del 19/07 (la encontro la auditoria cruzada, no yo).** Este documento afirmaba que 4
+servicios no podian tener healthcheck "porque usan imagenes distroless sin shell". Eso se asumio;
+nunca se ejecuto un comando para verificarlo. Al comprobarlo, era falso en la mitad de los casos:
+
+| Servicio | Comprobacion | Resultado |
+|---|---|---|
+| `toxiproxy` | `docker run --entrypoint sh` | `exec: "sh": not found` -> sin shell, justificado |
+| `otel-collector` | idem | sin shell, justificado |
+| `tempo` | `command -v wget` | **`/usr/bin/wget`** -> healthcheck sobre `/ready` |
+| `promtail` | `command -v wget/curl/nc` -> ninguno; `bash` + `/dev/tcp` -> **disponibles** | healthcheck via socket TCP al puerto 9080 |
+
+Es exactamente el error que este documento le seniala a los otros equipos: **dar por cierto lo que
+no se ejecuto.** Cometido por mi, en el documento donde acuso a los demas de cometerlo, y detectado
+por la revision cruzada al pedir la evidencia. Es la mejor demostracion de para que sirve esa
+revision: atrapa lo que el autor no puede ver de si mismo.
+
+**Metodo para el que quiera repetirlo** (antes de declarar que algo "no se puede"):
+
+```bash
+docker run --rm --entrypoint sh <imagen> -c "command -v wget curl nc"   # herramientas HTTP
+docker run --rm --entrypoint bash <imagen> -c "exec 3<>/dev/tcp/1.1.1.1/80"   # socket nativo
+```
+
+Para los 2 que realmente no tienen shell, la deuda #3 propone habilitar el endpoint de salud propio
+del servicio: el collector trae la extension `health_check` (puerto 13133), hoy no activada en
+`otel-collector-config.yaml`. Eso es zona del Equipo 4.
 - [ ] Ningún servicio arranca antes que su dependencia (`condition: service_healthy`).
 - [ ] Un contenedor matado se recupera solo (`restart: unless-stopped`).
 - [ ] Ninguna imagen usa `latest`.
