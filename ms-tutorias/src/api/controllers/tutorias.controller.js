@@ -147,7 +147,8 @@ const getTutoriasDelEstudiante = async (req, res, next) => {
 const cancelarTutoria = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const resultado = await tutoriaService.cancelarTutoria(id, req.user.sub, req.correlationId);
+        // Reenviar el JWT del usuario: ms-agenda ahora exige token también en DELETE /bloqueos.
+        const resultado = await tutoriaService.cancelarTutoria(id, req.user.sub, req.correlationId, req.header('Authorization'));
         res.status(200).json(toTutoriaResponse(resultado));
     } catch (error) {
         next(error);

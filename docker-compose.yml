@@ -11,6 +11,12 @@ services:
       - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
       - JWT_EXPIRES_IN=1h
       - SERVICE_NAME=MS_Auth
+      # VARIABLES PARA LA BD (faltaban)
+      - DB_HOST=db-auth
+      - DB_PORT=5432
+      - DB_USER=user_auth
+      - DB_PASSWORD=${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en tu .env raíz}
+      - DB_NAME=db_auth
 
   # --- Servicio de Usuarios ---
   ms-usuarios:
@@ -27,6 +33,8 @@ services:
       - DB_NAME=db_usuarios
       - SERVICE_NAME=MS_Usuarios
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
+      # Necesario para validar los JWT emitidos por ms-auth (mismo secreto)
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
     depends_on:
       # Asegura que la BD inicie antes que el servicio
       - db-usuarios
@@ -47,6 +55,8 @@ services:
       - DB_NAME=db_agenda
       - SERVICE_NAME=MS_Agenda
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
+      # Necesario para validar los JWT emitidos por ms-auth (mismo secreto)
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
     depends_on:
       # Depende de su propia BD
       - db-agenda
