@@ -393,7 +393,6 @@ services:
       start_period: 10s
 
   # --- MONITORIZACIÓN ---
-  # --- MONITORIZACIÓN ---
   tempo:
     # Equipo 5: healthcheck agregado tras VERIFICAR que la imagen tiene shell y wget
     #   docker run --rm --entrypoint sh grafana/tempo:2.5.0 -c 'command -v wget'  -> /usr/bin/wget
@@ -434,7 +433,8 @@ services:
       - "4317:4317"
       - "4318:4318"
     depends_on:
-      - tempo
+      tempo:
+        condition: service_healthy
   prometheus:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
@@ -530,11 +530,10 @@ services:
       - ./promtail-config.yaml:/etc/promtail/config.yml:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:
-      # Equipo 5: espera a que Loki este SANO, no solo encendido. Si Promtail arranca antes, los
-      # primeros logs se pierden porque el destino todavia no acepta escrituras.
       loki:
         condition: service_healthy
 
+  
 # --- Definición de Volúmenes ---
 volumes:
   postgres_data_auth:
