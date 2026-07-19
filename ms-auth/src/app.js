@@ -7,6 +7,8 @@ const rateLimit = require('express-rate-limit');
 const config = require('./config');
 const authRouter = require('./api/routes/auth.routes'); // Importa el enrutador
 const errorHandler = require('./api/middlewares/errorHandler');
+const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
+const requestLogger = require('./api/middlewares/requestLogger.js');
 const promBundle = require("express-prom-bundle");
 
 const app = express();
@@ -29,6 +31,8 @@ const metricsMiddleware = promBundle({
 app.use(metricsMiddleware);
 
 app.use(express.json());
+app.use(correlationIdMiddleware);
+app.use(requestLogger);
 
 // Aquí se usa la variable 'authRouter'. Si el archivo importado no exporta
 // una función, aquí es donde Express falla.
