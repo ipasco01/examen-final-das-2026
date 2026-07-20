@@ -33,6 +33,9 @@ services:
       - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
       - JWT_EXPIRES_IN=1h
       - SERVICE_NAME=MS_Auth
+      # --- OpenTelemetry (trazas distribuidas) ---
+      - OTEL_SERVICE_NAME=ms-auth
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       # --- VARIABLES PARA LA BD (Equipo 5: faltaban; db.js caía al default localhost) ---
       - DB_HOST=db-auth
       - DB_PORT=5432
@@ -71,6 +74,9 @@ services:
       - DB_PASSWORD=${USUARIOS_DB_PASSWORD:?Definí USUARIOS_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_usuarios
       - SERVICE_NAME=MS_Usuarios
+      # --- OpenTelemetry (trazas distribuidas) ---
+      - OTEL_SERVICE_NAME=ms-usuarios
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
       # Equipo 5: el middleware JWT agregado por el Equipo 3 necesita este secreto (config/index.js
       # no define default para jwtSecret; sin esta variable, toda validación de token fallaría).
@@ -110,6 +116,9 @@ services:
       - DB_PASSWORD=${AGENDA_DB_PASSWORD:?Definí AGENDA_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_agenda
       - SERVICE_NAME=MS_Agenda
+      # --- OpenTelemetry (trazas distribuidas) ---
+      - OTEL_SERVICE_NAME=ms-agenda
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
       # Equipo 5: mismo caso que ms-usuarios — el middleware JWT del Equipo 3 requiere el secreto.
       - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
@@ -162,6 +171,9 @@ services:
       - PORT=3003
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
       - SERVICE_NAME=MS_Notificaciones
+      # --- OpenTelemetry (trazas distribuidas) ---
+      - OTEL_SERVICE_NAME=ms-notificaciones
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
     depends_on:
       rabbitmq:
         condition: service_healthy # Espera a que RabbitMQ responda, no solo a que arranque
@@ -218,6 +230,8 @@ services:
       - DB_PASSWORD=${TUTORIAS_DB_PASSWORD:?Definí TUTORIAS_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_tutorias
       - SERVICE_NAME=MS_Tutorias
+      # --- OpenTelemetry (trazas distribuidas) ---
+      - OTEL_SERVICE_NAME=ms-tutorias
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
     depends_on:

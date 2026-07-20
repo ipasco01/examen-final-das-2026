@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Microservicio orquestador para gestionar la creación de tutorías.",
   "main": "src/app.js",
-  "scripts": { 
+  "scripts": {
     "tracing.js": "node src/config/tracing.js",
     "dev": "nodemon src/app.js",
     "test:unit": "node --test test/*.test.js",
@@ -12,6 +12,7 @@
   "author": "edsaana",
   "license": "ISC",
   "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/auto-instrumentations-node": "^0.78.0",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.220.0",
     "@opentelemetry/resources": "^2.9.0",
@@ -36,4 +37,3 @@
     "nodemon": "^3.1.3"
   }
 }
-  
