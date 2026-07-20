@@ -154,15 +154,21 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Manifiestos parsean y cumplen la politica minima
-        # No se usa 'kubectl apply --dry-run=server' porque requiere un cluster. La validacion
-        # estructural alcanza para lo que falla en la practica: probes, resources y :latest.
+        # Chequeo ESTRUCTURAL: rapido (7s) y suficiente para lo que se olvida al escribir un
+        # manifiesto. Pero NO dice nada sobre si los pods arrancan -- ver el job k8s-arranque-real
+        # de abajo, agregado el 20/07 despues de que este chequeo pasara en verde durante un dia
+        # entero mientras las 5 bases y RabbitMQ estaban rotas en el cluster (hallazgo #16).
         run: |
           python3 - <<'EOF'
           import yaml, glob, sys
           errores = []
           for f in glob.glob('kubernetes-manifests/*.yaml'):
               for doc in yaml.safe_load_all(open(f)):
-                  if not doc or doc.get('kind') not in ('Deployment', 'StatefulSet'):
+                  # DaemonSet agregado el 20/07 junto con promtail.yaml. Sin el, este lint
+                  # habria ignorado por completo un workload nuevo -- el mismo agujero que dejo
+                  # pasar alertmanager y mailpit sin healthcheck. Al agregar un `kind`, hay que
+                  # agregarlo tambien aca.
+                  if not doc or doc.get('kind') not in ('Deployment', 'StatefulSet', 'DaemonSet'):
                       continue
                   nombre = doc['metadata']['name']
                   for c in doc['spec']['template']['spec']['containers']:
@@ -177,6 +183,220 @@ jobs:
               sys.exit(1)
           print("OK: todos los workloads tienen probes, resources y version fijada")
           EOF
+
+  k8s-arranque-real:
+    name: Los manifiestos levantan en un cluster de verdad
+    runs-on: ubuntu-latest
+    # DEUDA #15, CERRADA EL 20/07. Es el equivalente del job `arranque-real` (que valida compose)
+    # pero del lado de Kubernetes, y existe por un caso concreto:
+    #
+    #   El 19/07 a las 15:04 se commiteo `securityContext: capabilities: drop: ["ALL"]` en los 5
+    #   StatefulSets de Postgres y en RabbitMQ. Eso le quita CHOWN/SETGID al entrypoint, que
+    #   arranca como root para preparar el volumen. **Rompia las 6 cosas con estado.**
+    #
+    #   Estuvo un dia entero sin que nadie lo viera, porque nadie volvio a aplicar los manifiestos
+    #   y el job `k8s-lint` valida estructura, no arranque: probes, resources y version estaban
+    #   perfectos. En verde, y roto.
+    #
+    # Es el hallazgo #7 (el CrashLoopBackOff del Equipo 2, aprobado y mergeado sin ejecutar) sobre
+    # nuestro propio trabajo. La leccion se repite: **un manifiesto valido no es un manifiesto que
+    # funciona.**
+    #
+    # Se usa kind (Kubernetes in Docker): levanta un cluster real en el runner en ~40s. No sirve
+    # para validar el Ingress de Kong (sus CRDs no estan instalados) ni el HPA (no hay
+    # metrics-server), y esos quedan fuera a proposito: ver el paso de despliegue.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Crear cluster efimero
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci
+
+      - name: Construir las imagenes y cargarlas en el cluster
+        # kind tiene su propio almacen de imagenes, aislado del daemon de Docker del runner. Sin
+        # `kind load`, los pods quedarian en ImagePullBackOff intentando bajar de GHCR una tag que
+        # todavia no se publico. Es la misma diferencia que en local entre el Kubernetes de Docker
+        # Desktop (comparte el daemon, por eso alli funciona `imagePullPolicy: IfNotPresent`) y kind.
+        run: |
+          for ms in ms-auth ms-usuarios ms-agenda ms-notificaciones ms-tutorias; do
+            docker build -t "ghcr.io/elcbas/$ms:0ab70dc" "./$ms"
+            kind load docker-image "ghcr.io/elcbas/$ms:0ab70dc" --name ci
+          done
+
+      - name: Crear los Secrets que no se versionan
+        # En el cluster real estos valores los inyecta el operador (ver seccion 4 del checklist).
+        # Aca se generan al vuelo: lo que se valida es que los manifiestos ARRANQUEN, no el manejo
+        # de secretos, que ya cubre el job compose-lint.
+        run: |
+          kubectl create secret generic app-runtime-secrets \
+            --from-literal=AUTH_DB_PASSWORD=ci-auth \
+            --from-literal=USUARIOS_DB_PASSWORD=ci-usuarios \
+            --from-literal=AGENDA_DB_PASSWORD=ci-agenda \
+            --from-literal=TUTORIAS_DB_PASSWORD=ci-tutorias \
+            --from-literal=NOTIFICACIONES_DB_PASSWORD=ci-notificaciones \
+            --from-literal=RABBITMQ_DEFAULT_USER=ci-broker \
+            --from-literal=RABBITMQ_DEFAULT_PASS=ci-broker-pass \
+            --from-literal=RABBITMQ_URL=amqp://ci-broker:ci-broker-pass@rabbitmq-service:5672 \
+            --from-literal=GRAFANA_ADMIN_PASSWORD=ci-grafana
+          kubectl create secret generic app-jwt-secret --from-literal=JWT_SECRET=ci-jwt-secret
+
+      - name: Ninguna clave de Secret referenciada queda sin crear
+        # AGREGADO EL 20/07 PORQUE ESTE JOB VOLVIO A FALLAR, y por la misma causa de fondo que la
+        # vez anterior: un requisito que vive en dos archivos y solo se actualizo en uno.
+        #
+        # grafana.yaml pide `GRAFANA_ADMIN_PASSWORD` y el paso de arriba creaba 8 claves, ninguna
+        # con ese nombre. Un secretKeyRef a una clave inexistente NO es un error de kubectl apply:
+        # el Deployment se crea sin protestar y el pod queda en CreateContainerConfigError. Nunca
+        # llega a Ready, y lo unico que se ve 180 segundos despues es
+        #   "0 of 1 updated replicas are available"
+        # que no menciona ni el Secret ni la clave. Diagnostico caro para una causa trivial.
+        #
+        # Agregar la clave arregla HOY. Este paso arregla MAÑANA: compara lo que los manifiestos
+        # piden contra lo que el cluster tiene, asi que el proximo secretKeyRef que alguien agregue
+        # sin tocar el CI falla aca, en dos segundos y diciendo exactamente que falta.
+        run: |
+          python3 - <<'EOF'
+          import yaml, glob, subprocess, sys, json
+
+          pedidas = set()
+          def buscar(nodo):
+              if isinstance(nodo, dict):
+                  ref = nodo.get('secretKeyRef')
+                  if isinstance(ref, dict) and 'name' in ref and 'key' in ref:
+                      pedidas.add((ref['name'], ref['key']))
+                  for v in nodo.values():
+                      buscar(v)
+              elif isinstance(nodo, list):
+                  for v in nodo:
+                      buscar(v)
+
+          for f in glob.glob('kubernetes-manifests/*.yaml'):
+              # kong-security.yaml no se aplica en este job (usa CRDs que no estan instalados).
+              if f.endswith('kong-security.yaml'):
+                  continue
+              for doc in yaml.safe_load_all(open(f)):
+                  buscar(doc)
+
+          existentes = set()
+          for nombre in sorted({n for n, _ in pedidas}):
+              r = subprocess.run(['kubectl', 'get', 'secret', nombre, '-o', 'json'],
+                                 capture_output=True, text=True)
+              if r.returncode != 0:
+                  print(f"::error::el Secret '{nombre}' no existe en el cluster")
+                  continue
+              for k in json.loads(r.stdout).get('data', {}):
+                  existentes.add((nombre, k))
+
+          faltan = sorted(pedidas - existentes)
+          if faltan:
+              for n, k in faltan:
+                  print(f"::error::{n}: falta la clave '{k}'. La pide un manifiesto y el paso "
+                        f"'Crear los Secrets que no se versionan' no la genera. El pod quedaria "
+                        f"en CreateContainerConfigError y el rollout expiraria sin explicar por que.")
+              sys.exit(1)
+          print(f"OK: las {len(pedidas)} claves referenciadas por los manifiestos existen")
+          EOF
+
+      - name: Crear los ConfigMaps que se generan desde archivos
+        # AGREGADO EL 20/07 PORQUE EL JOB FALLO SIN ESTO.
+        #
+        # Tres ConfigMaps NO estan dentro de kubernetes-manifests/: se generan desde los archivos
+        # reales para no duplicar contenido que se desincroniza (el dashboard de Grafana son ~590
+        # lineas de JSON que el Equipo 4 edita seguido). La decision esta explicada en
+        # grafana.yaml, y su costo asumido era que `kubectl apply -f kubernetes-manifests/` deja
+        # de bastar.
+        #
+        # **Ese costo quedo escrito y no se pago.** En grafana.yaml dice literalmente que estos
+        # comandos "van en la seccion 4 del checklist y en el job k8s-arranque-real del CI" -- y
+        # solo fueron al checklist. El job apuntaba a montar volumenes de ConfigMaps inexistentes:
+        # prometheus y grafana quedaban en ContainerCreating para siempre y el rollout expiraba.
+        #
+        # Es el mismo patron que este workflow persigue, cometido en el propio workflow: el
+        # requisito documentado y no ejecutado.
+        run: |
+          kubectl create configmap prometheus-rules --from-file=alert_rules.yml
+          kubectl create configmap grafana-datasources --from-file=grafana/provisioning/datasources/
+          kubectl create configmap grafana-dashboards --from-file=grafana/provisioning/dashboards/
+
+      - name: Desplegar
+        # Se excluyen dos archivos, y el motivo esta documentado en el checklist:
+        #   kong-security.yaml -> usa CRDs de Kong (KongPlugin/KongConsumer) que no estan instalados
+        #   autoscaling.yaml   -> los HPA necesitan metrics-server, que kind no trae
+        # Ninguno de los dos impide que los pods arranquen, que es lo que este job verifica.
+        run: |
+          mkdir -p /tmp/manifiestos
+          cp kubernetes-manifests/*.yaml /tmp/manifiestos/
+          rm -f /tmp/manifiestos/kong-security.yaml /tmp/manifiestos/autoscaling.yaml
+          kubectl apply -f /tmp/manifiestos/
+
+      - name: Los pods con estado llegan a Ready
+        # ESTE es el paso que habria atrapado el hallazgo #16. Un StatefulSet cuyo entrypoint no
+        # puede preparar su volumen entra en CrashLoopBackOff y nunca llega a Ready.
+        run: |
+          kubectl rollout status statefulset/db-auth --timeout=180s
+          kubectl rollout status statefulset/db-usuarios --timeout=180s
+          kubectl rollout status statefulset/db-agenda --timeout=180s
+          kubectl rollout status statefulset/db-tutorias --timeout=180s
+          kubectl rollout status statefulset/db-notificaciones --timeout=180s
+          kubectl rollout status statefulset/rabbitmq --timeout=180s
+          kubectl rollout status statefulset/tempo --timeout=180s
+
+      - name: El esquema de BD se creo solo
+        # ESTE es el paso que habria atrapado el hallazgo #17. En compose el esquema entra por
+        # /docker-entrypoint-initdb.d; en K8s eso no existia y las bases nacian vacias, con lo cual
+        # ms-tutorias moria en loop buscando `tutorias_notificaciones_outbox`.
+        # Se verifica el EFECTO (la tabla existe), no que el ConfigMap este montado.
+        run: |
+          kubectl exec db-tutorias-0 -- psql -U user_tutorias -d db_tutorias \
+            -c "SELECT 1 FROM tutorias_notificaciones_outbox LIMIT 1;" > /dev/null
+          kubectl exec db-notificaciones-0 -- psql -U user_notificaciones -d db_notificaciones \
+            -c "SELECT 1 FROM logs_notificacion LIMIT 1;" > /dev/null
+          echo "OK: el esquema se inicializo solo en las dos bases criticas"
+
+      - name: Los microservicios llegan a Ready
+        run: |
+          for ms in ms-auth ms-usuarios ms-agenda ms-notificaciones ms-tutorias; do
+            kubectl rollout status "deployment/${ms}-deployment" --timeout=180s
+          done
+
+      - name: El plano de observabilidad esta arriba
+        # Agregado el 20/07 al portar la deuda #1. `rollout status` sobre un DaemonSet espera a
+        # que haya un pod Ready por nodo, no una replica fija.
+        run: |
+          kubectl rollout status deployment/otel-collector --timeout=120s
+          kubectl rollout status statefulset/loki --timeout=180s
+          kubectl rollout status statefulset/prometheus --timeout=180s
+          kubectl rollout status deployment/grafana --timeout=180s
+          kubectl rollout status daemonset/promtail --timeout=180s
+          echo "OK: collector, Tempo, Loki, Prometheus, Grafana y Promtail Ready"
+
+      - name: Prometheus descubrio los 5 microservicios
+        # ESTE es el chequeo que protege el trabajo de Isabel. El panel "Servicios activos (up)"
+        # filtra por up{service_name!=""}; si el relabeling de kubernetes_sd_configs deja de
+        # traducir la etiqueta del pod, el panel muestra "No data" aunque todo este sano y nadie
+        # se entera hasta abrir Grafana. Se verifica el EFECTO: 5 targets con service_name.
+        run: |
+          kubectl port-forward svc/prometheus 9090:9090 &
+          sleep 10
+          activos=$(curl -sf http://localhost:9090/api/v1/targets \
+            | python3 -c 'import sys,json; t=json.load(sys.stdin)["data"]["activeTargets"]; print(sum(1 for x in t if x["health"]=="up" and x["labels"].get("service_name")))')
+          echo "targets UP con service_name: $activos"
+          if [ "$activos" -ne 5 ]; then
+            echo "::error::Se esperaban 5 targets con service_name y hay $activos. El relabeling se rompio."
+            exit 1
+          fi
+
+      - name: Diagnostico si algo fallo
+        if: failure()
+        run: |
+          kubectl get pods -o wide
+          kubectl get events --sort-by=.lastTimestamp | tail -40
+          kubectl describe pods | grep -A5 -E "Warning|Error" || true
+          for p in $(kubectl get pods -o name); do
+            echo "===== $p ====="
+            kubectl logs "$p" --tail=30 --all-containers=true || true
+          done
 
   arranque-real:
     name: El stack levanta y responde

@@ -3,7 +3,7 @@
 # Equipo 5 (Deployment) — issue "K8s operable": probes, resources y variables de BD y broker
 # sincronizadas con docker-compose.yml (drift corregido: este manifiesto no tenía DB_* ni
 # RABBITMQ_URL, así que el servicio no podía conectarse a sus dependencias). Probes sobre
-# /metrics (express-prom-bundle); /health con dependencias es el siguiente paso con el Equipo 4.
+# /health propio (deuda #2, cerrada el 20/07): registrado antes del rateLimit y sin consultar la BD.
 # Nota: en Kubernetes no hay Toxiproxy; ms-usuarios se llama directo por su Service.
 apiVersion: v1
 kind: Service
@@ -37,6 +37,15 @@ spec:
         linkerd.io/inject: enabled
       labels:
         app: ms-tutorias
+        # Equipo 5 (20/07): etiqueta para que Prometheus recupere el label `service_name`.
+        # En compose ese label lo pone el Equipo 4 target por target en prometheus.yml
+        # (static_configs). En Kubernetes los targets se descubren solos y no hay donde
+        # escribirlos a mano, asi que el dato tiene que viajar CON el pod: Prometheus lo lee
+        # con relabel_configs desde __meta_kubernetes_pod_label_service_name.
+        # Sin esto el panel "Servicios activos (up)" de Isabel muestra "No data" aunque los 5
+        # esten sanos -- el mismo bug que ella arreglo en compose, reintroducido al cambiar de
+        # plataforma.
+        service_name: MS_Tutorias
     spec:
       # Equipo 5 (D4 de la auditoria, mitad Kubernetes): el USER del Dockerfile es una
       # preferencia de la imagen; securityContext es la garantia del cluster. Sin runAsNonRoot,
@@ -64,18 +73,21 @@ spec:
           # tardo notablemente mas que el de los otros cuatro microservicios.
           # Por eso aqui: (a) startupProbe que le da hasta 60s para terminar de arrancar sin que
           # la liveness lo mate en loop, y (b) timeoutSeconds explicito en las tres sondas.
-          # Mejora pendiente (issue abierto): exponer un /health liviano propio, independiente del
-          # scrape de metricas, para no acoplar la disponibilidad del pod al endpoint de Prometheus.
+          # RESUELTO el 20/07: ese /health liviano ya existe y es a donde apuntan las tres sondas.
+          # Equipo 5 (20/07): las probes apuntaban a /metrics y eso fallaba por DOS causas
+          # independientes -- el rate limiter devolvia 429 tras ~10 min (hallazgo #19) y los Gauges
+          # del Equipo 4 consultan la BD, asi que un fallo de datos derribaba el pod (hallazgo #17).
+          # Ahora apuntan a /health, que se registra ANTES del rateLimit y no toca la base.
           startupProbe:
             httpGet:
-              path: /metrics
+              path: /health
               port: 3000
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 12   # 12 x 5s = hasta 60s de arranque tolerado
           readinessProbe:
             httpGet:
-              path: /metrics
+              path: /health
               port: 3000
             initialDelaySeconds: 10
             periodSeconds: 10
@@ -83,7 +95,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /metrics
+              path: /health
               port: 3000
             initialDelaySeconds: 30
             periodSeconds: 15

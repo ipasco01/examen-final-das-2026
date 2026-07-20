@@ -1,0 +1,214 @@
+# kubernetes-manifests/prometheus.yaml
+#
+# Equipo 5 (Deployment) — deuda #1, tercera parte. El mas delicado de los cuatro.
+#
+# ══════════════════════════════════════════════════════════════════════════════════════════
+#  LO QUE HAY QUE ACORDAR CON EL EQUIPO 3 (SEGURIDAD) ANTES DE APLICAR ESTO EN SERIO
+# ══════════════════════════════════════════════════════════════════════════════════════════
+#
+# Este es el UNICO manifiesto del proyecto que pide permisos sobre la API de Kubernetes. El
+# ClusterRole de abajo permite LEER (get/list/watch) pods, services y endpoints de TODO el
+# cluster. En concreto eso significa que Prometheus puede ver:
+#
+#   SI  - nombres de pods, sus IPs, sus etiquetas y anotaciones
+#   SI  - los NOMBRES de las variables de entorno y a que Secret referencian
+#   NO  - el CONTENIDO de los Secrets (haria falta un permiso explicito sobre `secrets`,
+#         que NO se pide aca y que no hace falta para descubrir targets)
+#
+# Es el patron estandar de cualquier Prometheus en Kubernetes, pero es una decision de
+# seguridad real, no un tramite. Se documenta aqui para que se discuta con datos.
+#
+# ══════════════════════════════════════════════════════════════════════════════════════════
+#  POR QUE ESTA CONFIG **NO** ES UNA COPIA DE ./prometheus.yml
+# ══════════════════════════════════════════════════════════════════════════════════════════
+#
+# Con tempo.yaml y otel-collector-config.yaml el ConfigMap es copia literal del archivo de la
+# raiz. Aca NO puede serlo: `static_configs` con hosts fijos (`ms-auth:4000`) no funciona en
+# Kubernetes, donde los pods cambian de IP y el HPA los multiplica. Hay que descubrir los
+# targets consultando la API. **Es una configuracion distinta para una plataforma distinta, no
+# una copia desincronizada** -- la diferencia importa y por eso queda escrita.
+#
+# EL PROBLEMA QUE ESTA TRADUCCION PODIA ROMPER, Y COMO SE EVITO:
+#
+# El 20/07 Isabel arreglo el panel "Servicios activos (up)". Su fix: poner el label
+# `service_name` target por target en static_configs, porque la metrica `up` la genera
+# Prometheus (no la app) y sin ese label el panel filtra por up{service_name!=""} y siempre
+# muestra "No data".
+#
+# Al pasar a kubernetes_sd_configs ese label desaparece: ya no hay targets escritos a mano
+# donde ponerlo. **Portar esto sin cuidado le rompe el panel a Isabel y parece que el sistema
+# esta caido.** La solucion: el dato viaja con el pod (label `service_name` en los 5
+# Deployments) y se recupera con relabel_configs. Mismo resultado, otro mecanismo.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  # Minimo indispensable para `role: pod` en kubernetes_sd_configs. NO incluye `secrets`
+  # ni ningun verbo de escritura: Prometheus solo observa.
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: default
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - '/etc/prometheus/rules/alert_rules.yml'
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager:9093']
+
+    scrape_configs:
+      - job_name: 'tutorias_services'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # 1. Solo los pods que tengan la etiqueta service_name -- o sea, los 5 microservicios.
+          #    Sin este filtro Prometheus intentaria scrapear TODOS los pods del cluster,
+          #    incluidas las bases y el broker, que no exponen /metrics y llenarian el panel de
+          #    targets caidos.
+          - source_labels: [__meta_kubernetes_pod_label_service_name]
+            regex: .+
+            action: keep
+
+          # 2. AQUI se recupera el trabajo de Isabel. La etiqueta del pod se convierte en el
+          #    label `service_name` de la metrica, que es lo que su panel filtra. En compose
+          #    esto lo hace `labels:` dentro de cada static_config; el mecanismo cambia, el
+          #    resultado es identico.
+          - source_labels: [__meta_kubernetes_pod_label_service_name]
+            target_label: service_name
+
+          # 3. Nombre del pod, util para distinguir replicas cuando el HPA escale.
+          #    Esta es la ventaja concreta sobre scrapear el Service: con `role: pod` cada
+          #    replica se scrapea por separado. Apuntando al Service, Kubernetes elegiria UNA
+          #    replica al azar por scrape y las metricas saldrian inconsistentes al escalar.
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus # el datasource de Grafana apunta a http://prometheus:9090
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+spec:
+  serviceName: prometheus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus # sin esto, el descubrimiento falla con 403
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534 # 'nobody', el usuario con el que corre la imagen oficial
+        runAsGroup: 65534
+        fsGroup: 65534   # sin esto el PVC nace de root y el TSDB no puede escribir (hallazgo #16)
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.0 # misma version fijada que en docker-compose.yml
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+              readOnly: true
+            # Las reglas SI son copia literal de ./alert_rules.yml (a diferencia de la config).
+            # El ConfigMap se genera desde el archivo, no se copia a mano:
+            #   kubectl create configmap prometheus-rules --from-file=alert_rules.yml
+            - name: rules
+              mountPath: /etc/prometheus/rules
+              readOnly: true
+            - name: prometheus-data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-rules
+  volumeClaimTemplates:
+    - metadata:
+        name: prometheus-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

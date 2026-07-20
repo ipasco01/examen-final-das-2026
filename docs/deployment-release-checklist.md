@@ -368,7 +368,7 @@ HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 | # | Pendiente | Atributo en riesgo | Duenio |
 |---|---|---|---|
 | 1 | **Paridad compose ↔ K8s**: compose tiene 22 servicios, K8s cubre 11. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`, `alertmanager`, `mailpit`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
-| 2 | **`/health` propio en los microservicios**, separado de `/metrics`. Hoy las probes apuntan a `/metrics`, y desde que el Equipo 4 agrego Gauges con `collect()` que consultan la BD, un problema en Postgres hace que Kubernetes reinicie los pods de aplicacion: un fallo de la capa de datos se propaga a la de computo | Disponibilidad | Equipo 5 + Equipo 4 |
+| 2 | ~~**`/health` propio en los microservicios**~~ **CERRADO 20/07**: registrado antes del `rateLimit` y sin consultar la BD. Cerro con dos causas observadas -- el 429 del limitador (#19) y el 500 de los Gauges (#17) | Disponibilidad | Equipo 5 + Equipo 4 |
 | 3 | **Healthcheck en `otel-collector`** (unico pendiente: `toxiproxy`, `tempo` y `promtail` ya lo tienen). **Comprobado: en compose no se puede sin cambiar la imagen base** -- sin shell, y los 4 subcomandos de `/otelcol-contrib` son offline. Activar la extension `health_check` (puerto 13133) NO resuelve compose, solo habilita una probe `httpGet` cuando se porte a K8s, donde la ejecuta el kubelet desde afuera. Ver seccion 3 | Disponibilidad | Equipo 5 (imagen) + Equipo 4 (extension) |
 | 4 | **ConfigMap** para la configuracion no secreta, hoy duplicada inline en cada Deployment | Reproducibilidad | Equipo 5 |
 | 5 | **NetworkPolicy**: cualquier pod alcanza cualquier base | Seguridad | Equipo 5 + Equipo 3 |
@@ -380,6 +380,7 @@ HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 | 11 | ~~**Test de integracion que ejercite el flujo, no solo el arranque**~~ **CERRADO 20/07**: `scripts/integracion-flujo-completo.sh`, ejecutado por el job `arranque-real`. Verifica dos EFECTOS que solo existen si la cadena completa funciono -- la fila en `logs_notificacion` (habria atrapado el hallazgo #10) y que el endpoint protegido acepte el token (habria atrapado el #11) | Verificabilidad | Equipo 5 |
 | 12 | ~~**Variables OTel ausentes en los 5 Deployments de K8s**~~ **CERRADO 20/07**: portado el pipeline de trazas (`tempo.yaml`, `otel-collector.yaml`) mas las variables en los 5 Deployments. Verificado ejecutando: el collector reporta `resource spans: 5` -- los cinco microservicios exportando a la vez | Observabilidad | Equipo 5 + Equipo 4 |
 | 13 | **`enviarEmail` en `ms-tutorias/src/infrastructure/clients/notificaciones.client.js` es codigo muerto y ademas incorrecto.** No lo invoca nadie (la Saga notifica por RabbitMQ), pero hace `axios.post(url, payload)` **sin cabecera `Authorization`**. Si alguien lo conectara, el `jwt.middleware` que el Equipo 2 monto en `POST /:canal` lo cortaria con 401 en el primer `if (!authHeader)`. O se borra el cliente, o se le propaga el token | Mantenibilidad | Equipo 1 + Equipo 2 |
+| 17 | **El pipeline de Promtail depende del runtime, no de la plataforma.** `docker: {}` en Docker Desktop (dockerd), `cri: {}` en kind y clusters reales (containerd). Hoy se prioriza la demo. Salidas: detectar el runtime al arrancar, u overlays por entorno con kustomize | Observabilidad | Equipo 5 |
 | 15 | **No hay validacion de manifiestos K8s en el CI.** `k8s-lint` valida estructura (probes, resources, version) pero no que los pods arranquen: el job `arranque-real` levanta compose, no Kubernetes. Es lo que dejo el hallazgo #16 invisible un dia entero. Cerrarlo requiere un cluster efimero en CI (kind o k3s) -- el equivalente de la deuda #11, del lado de K8s | Verificabilidad | Equipo 5 |
 | 14 | ~~**`materia` no se valida contra nada y no existe un catalogo de materias en el modelo.**~~ **CERRADO 20/07**: `tutores.especialidad` (VARCHAR libre, un tutor = una sola materia) se reemplazo por un catalogo real -- tablas `materias` y `tutor_materia` (N:M) en `db_usuarios`. `ms-usuarios` expone `GET /usuarios/materias` (el catalogo que faltaba para poblar un `<select>`) y `GET /usuarios/tutores`/`GET /usuarios/tutores/:id` devuelven `materias: string[]` por tutor. `ejecutarSagaSolicitudTutoria` (`tutoria.service.js`) valida `materia` contra ese array, en el mismo punto sin efectos colaterales que ya se habia identificado (despues de resolver al tutor, antes de crear la fila PENDIENTE). Verificado: un tutor sembrado con 2 materias (`t54321`) acepta solicitudes de cualquiera de las dos -- la prueba de que el N:M funciona, no solo la forma | Modelo de dominio | Equipo 2 + Equipo 1 |
 
@@ -406,9 +407,25 @@ Con otro nombre habria que forkear ese archivo, y **dos copias de la misma confi
 fuente de drift que este documento entero viene combatiendo**. Se adapta el nombre del Service, que
 es mio, antes que duplicar un archivo ajeno.
 
-**La probe del collector es `tcpSocket`, no `httpGet`**, porque la extension `health_check` sigue
-pedida al Equipo 4. Verifica que el puerto acepte conexiones, no que el pipeline hacia Tempo
-funcione. Cuando la activen, pasa a `httpGet` al 13133.
+**La probe del collector es `httpGet` al 13133** (nacio como `tcpSocket: 4317`). Se activo la
+extension `health_check` en `otel-collector-config.yaml` el mismo dia -- cambio aditivo, no toca
+receivers, processors ni exporters. Verificado:
+
+```bash
+curl http://localhost:13133
+# -> {"status":"Server available","upSince":"...","uptime":"192ms"}
+```
+
+**Ojo con el detalle que hace falta para que funcione:** declarar la extension en el bloque
+`extensions:` NO la carga. Hay que agregarla ademas a `service.extensions: [health_check]`. Sin esa
+segunda linea el bloque queda escrito y jamas se activa -- el mismo patron que este documento
+persigue hace tres dias, ahora dentro de un archivo de configuracion.
+
+**Y esto NO habilita un healthcheck en compose.** El puerto 13133 se expuso para poder verificarlo
+a mano desde el host, pero el healthcheck de Docker corre DENTRO del contenedor y la imagen sigue
+sin cliente HTTP. `otel-collector` continua siendo la unica excepcion documentada en el CI. La
+asimetria es el punto: **misma imagen, mismo servicio, y una plataforma puede verificarlo y la otra
+no**, porque el kubelet consulta desde afuera y Docker desde adentro.
 
 ### Hallazgo #16: el endurecimiento D4 rompia las 6 cosas con estado, un dia entero
 
@@ -530,6 +547,140 @@ docker exec loki cat /etc/loki/local-config.yaml | grep path_prefix
 Habria apostado por `/tmp/loki`, que es el default de otras versiones de la imagen. Montar en la
 ruta equivocada habria dejado el compose con aspecto de arreglado y a Loki perdiendo los logs
 igual: **peor que no tocarlo**, porque cierra la pregunta sin resolver el problema.
+
+
+### Hallazgo #19: el rate limiter mataba los 5 microservicios cada 10 minutos
+
+Al portar el pipeline de trazas quedo el cluster corriendo un rato largo, y aparecio esto:
+
+```
+Liveness probe failed: HTTP probe failed with statuscode: 429
+Readiness probe failed: HTTP probe failed with statuscode: 429
+```
+
+En los cinco. **Es aritmetica, no mala suerte:**
+
+| | Frecuencia | Peticiones en 15 min |
+|---|---|---|
+| readinessProbe | cada 10s | 90 |
+| livenessProbe | cada 15s | 60 |
+| **Total por pod** | | **150** |
+
+`app.use(rateLimit({ windowMs: 15*60*1000, max: 100 }))` esta declarado ANTES del middleware de
+metricas, asi que `/metrics` --a donde apuntaban las probes-- queda detras del limitador. A los
+~10 minutos el kubelet supera las 100 peticiones, empieza a recibir 429, la probe lo cuenta como
+fallo y con `failureThreshold: 3` Kubernetes reinicia el pod. **Los pods llevaban 6 reinicios en
+65 minutos: uno cada diez.**
+
+El limitador esta bien puesto: protege de abuso de usuarios. El error fue **poner las probes detras
+de un control pensado para trafico de usuarios.** Un kubelet no es un usuario.
+
+### Hallazgo #20: `timeoutSeconds` ausente en las probes de las 5 bases
+
+En los mismos eventos:
+
+```
+Liveness probe failed: command timed out: "pg_isready -U user_notificaciones ..." timed out after 1s
+```
+
+**Un segundo.** Es el hallazgo #4 --documentado para rabbitmq el 18/07-- que nunca se aplico a las
+bases: sus probes `exec` no declaraban `timeoutSeconds`, y el default de Kubernetes es 1. Corregido
+a 5s en las cinco. Un defecto que se arregla en un servicio y no en los otros cinco sigue siendo el
+mismo defecto.
+
+### Deuda #2 cerrada: `/health` propio, y por que va antes del rateLimit
+
+```js
+app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));  // <- primero
+app.use(rateLimit({ max: 100 }));
+app.use(metricsMiddleware);
+```
+
+El orden ES el arreglo. Y el endpoint **no consulta la base ni el broker**, deliberadamente.
+
+Esta deuda estaba anotada desde el 19/07 con una sola justificacion teorica (el acoplamiento con la
+capa de datos). Termino cerrandose con **dos causas independientes, las dos observadas**:
+
+| Causa | Sintoma | Hallazgo |
+|---|---|---|
+| Rate limiter | 429 tras ~10 min | #19 |
+| Gauges que consultan Postgres | 500 al faltar una tabla | #17 |
+
+**Criterio de diseño:** una liveness probe responde "¿hay que reiniciar este proceso?". Reiniciar un
+pod no arregla una base caida -- solo le quita una replica a un sistema ya degradado. Por eso el
+/health de liveness es tonto a proposito. Una probe que mire dependencias va en un endpoint aparte
+y solo para readiness, nunca para liveness.
+
+**Verificacion (no "aplique y no dio error"):** los 5 pods nuevos llevaron **15 minutos con
+`RESTARTS 0`**, pasando el umbral de ~10 min donde antes morian, y sin un solo evento 429 nuevo.
+
+### Lo que NO se arreglo, y por que
+
+RabbitMQ acumulo 18 reinicios con `rabbitmq-diagnostics -q ping timed out after 10s`. **No se
+toco.** La maquina estaba corriendo el stack de compose completo (22 contenedores) mas Kubernetes
+(13 pods) a la vez: ~35 contenedores compitiendo por CPU. Al bajar compose, RabbitMQ se estabilizo
+solo y lleva mas de 15 minutos sano sin ningun cambio en su manifiesto.
+
+**Era un artefacto de carga, no un defecto.** Subirle el timeout habria "arreglado" un sintoma
+inexistente y ocultado la causa real. Distinguir las dos cosas importa tanto como arreglar: el 429
+es determinista y pasa siempre; este dependia del entorno.
+
+
+### Hallazgo #22: escribi el comentario que describia el error mientras lo cometia
+
+Al portar Promtail puse `cri: {}` en el pipeline, y en el encabezado del manifiesto escribi esto
+para justificarlo:
+
+> "Dejar `docker: {}` no da error visible: Promtail arranca, la probe pasa, y los logs llegan a
+> Loki **sin parsear**, como una sola cadena inutil. Es la clase de fallo que se ve solo mirando el
+> resultado en Grafana, no el estado del pod."
+
+**Describi con precision el fallo que estaba cometiendo, en el comentario que lo justificaba.**
+Tenia razon sobre el modo de falla y me equivoque sobre la direccion: asumi que Kubernetes implica
+containerd, y **Docker Desktop usa dockerd**. Sus logs son JSON de Docker, igual que en compose.
+
+Como se vio -- comparando dos pantallas, no leyendo nada:
+
+| | Lo que mostraba Grafana |
+|---|---|
+| **3005** (compose) | `level=info ts=... caller=flush.go:167 msg="flushing stream"` |
+| **3006** (Kubernetes) | `{"log":"...\u0009info\u0009TracesExporter...","stream":"stderr","time":"..."}` |
+
+Mientras tanto: pod `Ready`, probe en verde, `daemonset successfully rolled out`, y el job de kind
+habria pasado igual. **Ningun chequeo de este proyecto --ni los healthchecks, ni las probes, ni el
+CI, ni el test de integracion-- puede detectar esto.** Solo se ve con el resultado a la vista.
+
+Lo encontro Isabel, pidiendo "verificar lo de grafana". Es el segundo hallazgo que sale de una
+observacion suya sin que ella supiera lo que estaba senalando (el otro es el #18, los volumenes).
+
+### Deuda #17: el mismo manifiesto necesita configuraciones distintas por runtime
+
+El arreglo del #22 abre un problema que no se puede cerrar sin elegir:
+
+| Entorno | Runtime | Stage correcto |
+|---|---|---|
+| Docker Desktop (la demo) | dockerd | `docker: {}` |
+| kind (el CI) | containerd | `cri: {}` |
+| Clusters reales (GKE, EKS...) | containerd | `cri: {}` |
+
+**El manifiesto correcto para la demo es el incorrecto para el pipeline.** Hoy se prioriza el
+entorno de la demo y queda anotado; las salidas reales son dos: detectar el runtime al arrancar, o
+mantener overlays por entorno (kustomize). Ninguna se hace hoy.
+
+Vale la pena decir lo que esto significa: **es la tesis de esta zona aplicada al ultimo archivo que
+escribi, y en su forma mas incomoda.** Los 21 hallazgos anteriores eran cosas que se podian
+arreglar para que funcionaran igual en los dos entornos. Este no: la diferencia esta en el runtime,
+por debajo de todo lo que este equipo controla. A veces "que funcione igual en todos lados" no es
+una meta alcanzable, y lo unico honesto es documentar cual elegiste y por que.
+
+### Ruido eliminado: el plano de control fuera de Loki
+
+Promtail intentaba leer los pods de `kube-system` (coredns, kube-proxy, storage-provisioner,
+vpnkit-controller) y llenaba Loki de `failed to tail file, stat failed`. Se agrego un `drop` por
+namespace.
+
+No es solo cosmetico: **los logs del plano de control de Kubernetes no son observabilidad de esta
+aplicacion.** Quien busque un error quiere ver los microservicios, no el DNS interno del cluster.
 
 ### Estado final verificado
 
