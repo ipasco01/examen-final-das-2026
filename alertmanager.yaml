@@ -1,0 +1,27 @@
+# alertmanager.yml
+# Alertmanager es quien decide QUÉ HACER con una alerta que Prometheus ya evaluó como
+# activa (agrupar alertas parecidas, esperar un poco por si se resuelve sola, evitar
+# spam repetido, y finalmente ENVIARLA a un canal real). Prometheus por sí solo nunca
+# notifica a nadie, solo expone el estado en /alerts.
+
+global:
+  # Mailpit corre un servidor SMTP falso en el puerto 1025 (sin autenticación,
+  # sin TLS) — perfecto para demo local, no necesitas una cuenta de correo real.
+  smtp_smarthost: 'mailpit:1025'
+  smtp_from: 'alertmanager@tutorias-app.local'
+  smtp_require_tls: false
+
+route:
+  # Agrupa alertas que compartan estos labels en una sola notificación, en vez
+  # de mandar un correo por cada alerta individual si varias se disparan juntas.
+  group_by: ['alertname', 'service_name']
+  group_wait: 10s       # espera 10s por si llegan más alertas para agrupar con esta
+  group_interval: 30s   # si el grupo cambia (nueva alerta), reenvía a los 30s
+  repeat_interval: 1h   # si la alerta sigue activa, no vuelve a notificar hasta 1h después
+  receiver: 'email-notifications'
+
+receivers:
+  - name: 'email-notifications'
+    email_configs:
+      - to: 'equipo-observabilidad@tutorias-app.local'
+        send_resolved: true # también notifica cuando la alerta se resuelve, no solo cuando dispara
