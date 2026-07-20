@@ -109,8 +109,67 @@ test('findAllTutores selecciona columnas explicitas, no SELECT *', async () => {
     await usuariosRepository.findAllTutores();
 
     assert.doesNotMatch(sqlEmitido, /SELECT\s+\*/i, 'no debe usar SELECT *');
-    assert.match(sqlEmitido, /id.*nombreCompleto.*especialidad/is);
+    assert.match(sqlEmitido, /id.*nombreCompleto/is);
+    // Deuda #14: especialidad ya no es columna de tutores, sale de materias via JOIN + array_agg.
+    assert.match(sqlEmitido, /LEFT JOIN tutor_materia/i);
+    assert.match(sqlEmitido, /LEFT JOIN materias/i);
+    assert.match(sqlEmitido, /array_agg/i);
     assert.match(sqlEmitido, /ORDER BY/i, 'el orden estable evita que las opciones salten entre recargas');
+});
+
+test('findTutorById trae las materias del tutor via JOIN, no un especialidad suelto', async () => {
+    let sqlEmitido = null;
+    queryImpl = async (text) => { sqlEmitido = text; return { rows: [] }; };
+
+    await usuariosRepository.findTutorById('t54321');
+
+    assert.match(sqlEmitido, /LEFT JOIN tutor_materia/i);
+    assert.match(sqlEmitido, /LEFT JOIN materias/i);
+    assert.match(sqlEmitido, /array_agg/i);
+});
+
+// GET /usuarios/materias -- catalogo del que antes carecia el modelo (deuda #14): sin esto no se
+// podia ofrecer un <select> de materias en el cliente.
+
+test('findAllMaterias selecciona columnas explicitas, no SELECT *', async () => {
+    let sqlEmitido = null;
+    queryImpl = async (text) => { sqlEmitido = text; return { rows: [] }; };
+
+    await usuariosRepository.findAllMaterias();
+
+    assert.doesNotMatch(sqlEmitido, /SELECT\s+\*/i, 'no debe usar SELECT *');
+    assert.match(sqlEmitido, /id.*nombre/is);
+    assert.match(sqlEmitido, /ORDER BY/i);
+});
+
+test('findAllMaterias devuelve [] cuando no hay materias, no un error', async () => {
+    queryImpl = async () => ({ rows: [] });
+
+    const materias = await usuariosRepository.findAllMaterias();
+
+    assert.deepEqual(materias, []);
+});
+
+test('findAllMaterias mapea el error de tabla ausente al mismo contrato que el resto', async () => {
+    const dbError = new Error('relation "materias" does not exist');
+    dbError.code = '42P01';
+    dbError.stack = dbError.message;
+    queryImpl = async () => { throw dbError; };
+
+    await assert.rejects(
+        () => usuariosRepository.findAllMaterias(),
+        (error) => {
+            assert.equal(error.statusCode, 500);
+            assert.match(error.message, /falta la tabla materias/i);
+            return true;
+        }
+    );
+});
+
+test('GET /usuarios/materias exige token, igual que el resto de las rutas', async () => {
+    const response = await fetch(`${baseUrl}/usuarios/materias`);
+
+    assert.equal(response.status, 401);
 });
 
 test('findAllTutores devuelve [] cuando no hay tutores, no un error', async () => {

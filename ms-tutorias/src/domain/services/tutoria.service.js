@@ -80,23 +80,23 @@ const ejecutarSagaSolicitudTutoria = async (datosSolicitud, correlationId, optio
         // mas abajo ya habria que compensar. Validar antes del primer paso irreversible es lo que
         // convierte un error en un rechazo barato en vez de un rollback distribuido.
         //
-        // LIMITE CONOCIDO: compara contra el VARCHAR libre `especialidad`, normalizando mayusculas
-        // y acentos. Es una curita sobre el problema de fondo -- no existe un catalogo de materias
-        // ni una relacion tutor-materia en el modelo, y un tutor solo puede tener una especialidad.
-        // Ver deuda #14 en docs/deployment-release-checklist.md.
+        // Deuda #14 resuelta: ya no se compara contra un VARCHAR `especialidad` (un tutor, una sola
+        // materia). `ms-usuarios` ahora expone `materias: string[]` desde el catalogo real
+        // (tabla `materias` + relacion N:M `tutor_materia`), asi que un tutor puede dictar varias.
         const normalizar = (texto) => String(texto || '')
             .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // quita tildes: "Fisica" == "Física"
             .trim().toLowerCase().replace(/\s+/g, ' ');
 
-        const especialidadTutor = tutor.especialidad;
-        if (especialidadTutor && normalizar(materia) !== normalizar(especialidadTutor)) {
-            trackCid(`Materia "${materia}" no corresponde a la especialidad del tutor ("${especialidadTutor}").`, 'ERROR');
+        const materiasTutor = tutor.materias || [];
+        const materiaCoincide = materiasTutor.some((m) => normalizar(m) === normalizar(materia));
+        if (materiasTutor.length > 0 && !materiaCoincide) {
+            trackCid(`Materia "${materia}" no corresponde a las materias del tutor (${materiasTutor.join(', ')}).`, 'ERROR');
             throw Object.assign(
-                new Error(`El tutor no dicta "${materia}". Su especialidad es "${especialidadTutor}".`),
+                new Error(`El tutor no dicta "${materia}". Sus materias son: ${materiasTutor.join(', ')}.`),
                 { statusCode: 400 }
             );
         }
-        trackCid(`Materia validada contra la especialidad del tutor ("${especialidadTutor}").`);
+        trackCid(`Materia validada contra las materias del tutor (${materiasTutor.join(', ') || 'sin materias asignadas'}).`);
 
         // --- 2. Verificar agenda ---
         trackCid('Verificando disponibilidad de agenda...');

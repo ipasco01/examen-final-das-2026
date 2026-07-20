@@ -78,6 +78,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /usuarios/tutores:
+    get:
+      tags:
+        - Usuarios
+      summary: Lista el catálogo de tutores
+      description: Devuelve todos los tutores con las materias que dicta cada uno (relación N:M contra `materias`). Lista vacía no es un error.
+      operationId: listarTutores
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Catálogo de tutores.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Tutor'
+        '500':
+          description: Error interno o base de datos de usuarios no inicializada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /usuarios/materias:
+    get:
+      tags:
+        - Usuarios
+      summary: Lista el catálogo de materias (deuda #14 resuelta)
+      description: Devuelve el catálogo real de materias, del que antes se carecía para poblar un `<select>` en el cliente. `tutores.especialidad` (VARCHAR libre) fue reemplazado por esta tabla más la relación N:M `tutor_materia`.
+      operationId: listarMaterias
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Catálogo de materias.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Materia'
+        '500':
+          description: Error interno o base de datos de usuarios no inicializada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   parameters:
     CorrelationId:
@@ -120,7 +168,20 @@ components:
           type: string
           format: email
           example: elena.solano@universidad.edu
-        especialidad:
+        materias:
+          type: array
+          description: Materias que dicta el tutor (deuda #14 resuelta -- reemplaza al VARCHAR libre `especialidad`, un tutor ya puede tener más de una).
+          items:
+            type: string
+          example: ['Bases de Datos Avanzadas', 'Estructuras de Datos']
+      additionalProperties: true
+    Materia:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        nombre:
           type: string
           example: Cálculo Multivariable
       additionalProperties: true

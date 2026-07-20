@@ -1,8 +1,13 @@
-// Paso 1b de la Saga: la materia solicitada debe coincidir con la especialidad del tutor.
+// Paso 1b de la Saga: la materia solicitada debe coincidir con alguna de las materias del tutor.
 //
 // Antes de esta regla, `materia` era texto libre: viajaba del formulario al INSERT y al asunto del
 // correo sin que nadie la comprobara. Se podia pedir "Fisica Cuantica" a una tutora cuya
 // especialidad es "Calculo Multivariable" y la Saga devolvia CONFIRMADA.
+//
+// Deuda #14 resuelta: el tutor ya no tiene una unica `especialidad` (VARCHAR libre), sino
+// `materias: string[]` resuelto por ms-usuarios contra el catalogo real (tabla `materias` +
+// relacion N:M `tutor_materia`). Estos tests migran el mock de `usuariosClient.getUsuario` a esa
+// forma y agregan el caso que prueba que el N:M funciona de verdad (un tutor con 2+ materias).
 //
 // Lo que se verifica aca no es solo el rechazo, sino DONDE ocurre: la validacion va despues de
 // resolver al tutor (paso 1) y antes de crear la fila PENDIENTE y bloquear agenda (pasos 3 y 4).
@@ -28,7 +33,10 @@ const clearModule = (filePath) => {
 
 // Monta el servicio con dobles de prueba y devuelve tambien el registro de efectos colaterales,
 // que es lo que permite afirmar que la Saga corto antes de tocar nada.
-const conServicioMontado = async (especialidadTutor, ejecutar) => {
+//
+// `materiasTutor` es el array que ms-usuarios devolveria para ese tutor (`[]`/`null`/`undefined`
+// representan un tutor sin materias asignadas todavia).
+const conServicioMontado = async (materiasTutor, ejecutar) => {
     const efectos = { saves: [], bloqueos: [], cancelaciones: [] };
 
     const repository = {
@@ -43,7 +51,7 @@ const conServicioMontado = async (especialidadTutor, ejecutar) => {
         getUsuario: async (tipo) => (
             tipo === 'estudiantes'
                 ? { email: 'estudiante@test.local', nombrecompleto: 'Estudiante Test' }
-                : { email: 'tutor@test.local', nombrecompleto: 'Tutor Test', especialidad: especialidadTutor }
+                : { email: 'tutor@test.local', nombrecompleto: 'Tutor Test', materias: materiasTutor }
         )
     };
 
@@ -88,7 +96,7 @@ const conServicioMontado = async (especialidadTutor, ejecutar) => {
 };
 
 test('rechaza con 400 una materia que el tutor no dicta, sin crear la tutoria ni tocar agenda', async () => {
-    await conServicioMontado('Cálculo Multivariable', async ({ tutoriaService, datos, efectos }) => {
+    await conServicioMontado(['Cálculo Multivariable'], async ({ tutoriaService, datos, efectos }) => {
         await assert.rejects(
             () => tutoriaService.solicitarTutoria(datos('Física Cuántica'), 'cid-materia-invalida'),
             (error) => {
@@ -108,7 +116,7 @@ test('rechaza con 400 una materia que el tutor no dicta, sin crear la tutoria ni
 
 test('acepta la materia correcta ignorando mayusculas, tildes y espacios de mas', async () => {
     for (const variante of ['Cálculo Multivariable', 'calculo multivariable', 'CÁLCULO  MULTIVARIABLE ']) {
-        await conServicioMontado('Cálculo Multivariable', async ({ tutoriaService, datos, efectos }) => {
+        await conServicioMontado(['Cálculo Multivariable'], async ({ tutoriaService, datos, efectos }) => {
             const resultado = await tutoriaService.solicitarTutoria(datos(variante), `cid-${variante}`);
             assert.equal(resultado.estado, 'CONFIRMADA', `"${variante}" deberia aceptarse`);
             assert.equal(efectos.saves.length > 0, true);
@@ -116,12 +124,47 @@ test('acepta la materia correcta ignorando mayusculas, tildes y espacios de mas'
     }
 });
 
-test('si el tutor no tiene especialidad cargada, no se bloquea la solicitud', async () => {
-    // Decision deliberada: `especialidad` es un VARCHAR nullable y hay tutores sembrados sin
-    // ella. Validar contra un dato ausente convertiria un hueco del modelo en una caida de
-    // servicio. Se deja pasar y queda anotado en la deuda #14 (no existe catalogo de materias).
-    await conServicioMontado(null, async ({ tutoriaService, datos }) => {
-        const resultado = await tutoriaService.solicitarTutoria(datos('Cualquier Cosa'), 'cid-sin-especialidad');
+test('un tutor con varias materias acepta una solicitud de cualquiera de ellas (N:M)', async () => {
+    // La prueba directa de que la deuda #14 se resolvio de verdad: un tutor ya no esta limitado a
+    // una sola especialidad. Se piden ambas materias en solicitudes separadas y las dos deben
+    // confirmarse.
+    for (const materiaSolicitada of ['Bases de Datos Avanzadas', 'Estructuras de Datos']) {
+        await conServicioMontado(
+            ['Bases de Datos Avanzadas', 'Estructuras de Datos'],
+            async ({ tutoriaService, datos, efectos }) => {
+                const resultado = await tutoriaService.solicitarTutoria(datos(materiaSolicitada), `cid-nm-${materiaSolicitada}`);
+                assert.equal(resultado.estado, 'CONFIRMADA', `"${materiaSolicitada}" deberia aceptarse`);
+                assert.equal(efectos.saves.length > 0, true);
+            }
+        );
+    }
+});
+
+test('un tutor con varias materias rechaza una que no dicta ninguna de las dos', async () => {
+    await conServicioMontado(
+        ['Bases de Datos Avanzadas', 'Estructuras de Datos'],
+        async ({ tutoriaService, datos, efectos }) => {
+            await assert.rejects(
+                () => tutoriaService.solicitarTutoria(datos('Física Cuántica'), 'cid-nm-invalida'),
+                (error) => {
+                    assert.equal(error.statusCode, 400);
+                    assert.match(error.message, /no dicta "Física Cuántica"/);
+                    assert.match(error.message, /Bases de Datos Avanzadas/);
+                    assert.match(error.message, /Estructuras de Datos/);
+                    return true;
+                }
+            );
+            assert.deepEqual(efectos.saves, [], 'no debe persistirse ninguna tutoria');
+        }
+    );
+});
+
+test('si el tutor no tiene materias cargadas todavia, no se bloquea la solicitud', async () => {
+    // Decision deliberada, heredada de la version anterior de esta regla: hay tutores sembrados sin
+    // materias asignadas en tutor_materia. Validar contra un catalogo vacio convertiria un hueco de
+    // datos en una caida de servicio, asi que se deja pasar.
+    await conServicioMontado([], async ({ tutoriaService, datos }) => {
+        const resultado = await tutoriaService.solicitarTutoria(datos('Cualquier Cosa'), 'cid-sin-materias');
         assert.equal(resultado.estado, 'CONFIRMADA');
     });
 });

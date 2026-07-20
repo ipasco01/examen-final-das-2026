@@ -49,6 +49,18 @@ json_valor() {
     | sed 's/^[^:]*:[[:space:]]*"//; s/"$//'
 }
 
+# Deuda #14 resuelta: `especialidad` dejo de ser un campo string plano en `tutores` -- ahora es
+# `materias: string[]` (catalogo real + relacion N:M). Se toma la primera materia del PRIMER
+# tutor del array (mismo criterio de "primera aparicion" que json_valor, asi que sigue emparejando
+# con el ID_TUTOR de abajo, que tambien es el primero).
+json_primera_materia() {
+  grep -oE '"materias"[[:space:]]*:[[:space:]]*\[[^]]*\]' \
+    | head -1 \
+    | grep -oE '"[^"]*"' \
+    | sed -n '2p' \
+    | sed 's/^"//; s/"$//'
+}
+
 echo "== 1. Autenticacion =="
 TOKEN=$(curl -fsS -m 10 -X POST "$MS_AUTH/auth/token" \
   -H 'Content-Type: application/json' \
@@ -66,10 +78,14 @@ echo "== 2. Catalogo de tutores (GET /usuarios/tutores) =="
 # el formulario del simulador con su fecha fija, que caduco sola.
 TUTORES=$(curl -sS -m 10 "$MS_USUARIOS/usuarios/tutores" -H "Authorization: Bearer $TOKEN")
 ID_TUTOR=$(echo "$TUTORES" | json_valor id)
-MATERIA=$(echo "$TUTORES" | json_valor especialidad)
+MATERIA=$(echo "$TUTORES" | json_primera_materia)
 
 if [ -z "${ID_TUTOR:-}" ]; then
   falla "el catalogo de tutores vino vacio o no parseo. Respuesta: $TUTORES"
+  exit 1
+fi
+if [ -z "${MATERIA:-}" ]; then
+  falla "el primer tutor del catalogo no tiene materias asignadas (seed sin datos para probar). Respuesta: $TUTORES"
   exit 1
 fi
 paso "tutor $ID_TUTOR dicta '$MATERIA'"
