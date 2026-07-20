@@ -3,8 +3,8 @@
 Qué debe existir y verificarse **antes** de dar por desplegado el sistema. Cada punto es
 verificable con un comando: si no se puede comprobar, no está hecho.
 
-Rama: `equipo5-deployment` · PR #8 · Ultima verificacion completa: 19/07, 19 servicios en compose
-(15 con healthcheck) y 10 workloads en Kubernetes.
+Rama: `equipo5-deployment` · Ultima verificacion completa: 19/07 noche, **20 servicios en compose
+(19 con healthcheck)** y 12 workloads en Kubernetes (6 StatefulSets + 5 Deployments + ingress).
 
 La tag de imagen NO se fija en este documento a proposito: es `git rev-parse --short HEAD` del
 commit desplegado, y queda obsoleta en cuanto alguien commitea. Ver seccion 2.
@@ -79,9 +79,29 @@ ms-notificaciones 3003, ms-tutorias 3000.
 
 ## 3. Docker Compose
 
-- [ ] Los 19 servicios levantan con un solo `docker compose up -d`.
-- [ ] **18 de los 19** servicios llegan a `healthy` (no solo `Up`). El unico restante es
+- [ ] Los 20 servicios levantan con un solo `docker compose up -d`.
+- [ ] **19 de los 20** servicios llegan a `healthy` (no solo `Up`). El unico restante es
       `otel-collector`, y la razon esta comprobada y tiene dueño.
+
+**Hallazgo del 19/07 (noche): `ms-notificaciones` sin base de datos.** El merge del Equipo 2
+incorporo `src/config/db.js` y `logNotificacion.repository.js`, que hacen INSERT/SELECT sobre
+`logs_notificacion` en cada notificacion para deduplicar por `correlation_id`. Pero no existia
+ninguna base para ese servicio: ni el servicio en compose, ni el volumen, ni las variables `DB_*`,
+ni manifiesto en K8s. Ya existia `docker/init/notificaciones/` -- sin ninguna base que lo montara.
+
+`new Pool({host: undefined})` cae al default `localhost`, que dentro del contenedor no tiene
+Postgres. **Es el mismo patron del primer hallazgo** (`ms-auth` sin variables de BD), repetido tres
+dias despues con otro servicio y otro equipo.
+
+Corregido: servicio `db-notificaciones` (puerto 5436, healthcheck, volumen, init montado),
+variables en `ms-notificaciones` con `depends_on: service_healthy`, StatefulSet + Service + PVC en
+`kubernetes-manifests/db-notificaciones.yaml`, y la clave en el Secret y en `.env.example`.
+Ademas se renombro `01-shema.sql` a `01-schema.sql`.
+
+**Limite honesto de nuestro propio CI:** el job `arranque-real` NO habria detectado esto. El
+servicio arranca bien y responde `/metrics`; el fallo aparece recien en la primera notificacion que
+intenta deduplicar. Para atraparlo hace falta un test de integracion que ejercite el flujo, no solo
+un chequeo de arranque. Queda como deuda #11.
 
 **Correccion del 19/07 — dos rondas, las dos las provoco la revision cruzada.**
 

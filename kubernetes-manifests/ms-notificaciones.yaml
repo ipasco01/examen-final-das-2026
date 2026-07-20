@@ -76,6 +76,23 @@ spec:
               cpu: 250m
               memory: 256Mi
           env:
+            # --- Equipo 5 (19/07): variables de BD. El servicio incorporo su propio
+            # repositorio de logs y no tenia base asignada en ningun entorno. El Service
+            # db-notificaciones-service se crea en db-notificaciones.yaml; la contrasenia
+            # viene del Secret app-runtime-secrets, que NO se versiona. ---
+            - name: DB_HOST
+              value: "db-notificaciones-service"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: "user_notificaciones"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: NOTIFICACIONES_DB_PASSWORD
+            - name: DB_NAME
+              value: "db_notificaciones"
             - name: PORT
               value: "3003"
             - name: SERVICE_NAME
