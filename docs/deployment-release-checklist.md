@@ -380,6 +380,7 @@ HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 | 11 | ~~**Test de integracion que ejercite el flujo, no solo el arranque**~~ **CERRADO 20/07**: `scripts/integracion-flujo-completo.sh`, ejecutado por el job `arranque-real`. Verifica dos EFECTOS que solo existen si la cadena completa funciono -- la fila en `logs_notificacion` (habria atrapado el hallazgo #10) y que el endpoint protegido acepte el token (habria atrapado el #11) | Verificabilidad | Equipo 5 |
 | 12 | ~~**Variables OTel ausentes en los 5 Deployments de K8s**~~ **CERRADO 20/07**: portado el pipeline de trazas (`tempo.yaml`, `otel-collector.yaml`) mas las variables en los 5 Deployments. Verificado ejecutando: el collector reporta `resource spans: 5` -- los cinco microservicios exportando a la vez | Observabilidad | Equipo 5 + Equipo 4 |
 | 13 | **`enviarEmail` en `ms-tutorias/src/infrastructure/clients/notificaciones.client.js` es codigo muerto y ademas incorrecto.** No lo invoca nadie (la Saga notifica por RabbitMQ), pero hace `axios.post(url, payload)` **sin cabecera `Authorization`**. Si alguien lo conectara, el `jwt.middleware` que el Equipo 2 monto en `POST /:canal` lo cortaria con 401 en el primer `if (!authHeader)`. O se borra el cliente, o se le propaga el token | Mantenibilidad | Equipo 1 + Equipo 2 |
+| 17 | **El pipeline de Promtail depende del runtime, no de la plataforma.** `docker: {}` en Docker Desktop (dockerd), `cri: {}` en kind y clusters reales (containerd). Hoy se prioriza la demo. Salidas: detectar el runtime al arrancar, u overlays por entorno con kustomize | Observabilidad | Equipo 5 |
 | 15 | **No hay validacion de manifiestos K8s en el CI.** `k8s-lint` valida estructura (probes, resources, version) pero no que los pods arranquen: el job `arranque-real` levanta compose, no Kubernetes. Es lo que dejo el hallazgo #16 invisible un dia entero. Cerrarlo requiere un cluster efimero en CI (kind o k3s) -- el equivalente de la deuda #11, del lado de K8s | Verificabilidad | Equipo 5 |
 | 14 | **`materia` no se valida contra nada y no existe un catalogo de materias en el modelo.** Comprobado en ejecucion: se puede solicitar "Fisica Cuantica" al tutor `t09876`, cuya especialidad sembrada es "Calculo Multivariable", y la Saga responde `CONFIRMADA`. La causa de fondo es el modelo: `especialidad` es un `VARCHAR(255)` libre dentro de `tutores`, sin tabla de materias ni relacion tutor-materia, y un tutor solo puede tener una. Por eso tampoco se puede ofrecer un `<select>` en el cliente: no hay catalogo de donde poblarlo, y `ms-usuarios` solo expone `GET /tutores/:id` (busqueda por ID, no coleccion). **Recomendado:** validar `materia` contra la especialidad del tutor en `ejecutarSagaSolicitudTutoria`, despues de resolver al tutor y **antes** de crear la fila PENDIENTE -- es el ultimo punto sin efectos colaterales, asi el rechazo es un `throw` y no un rollback distribuido. Eso es una curita; la solucion real es un catalogo con relacion N:M | Modelo de dominio | Equipo 2 + Equipo 1 |
 
@@ -623,6 +624,63 @@ solo y lleva mas de 15 minutos sano sin ningun cambio en su manifiesto.
 **Era un artefacto de carga, no un defecto.** Subirle el timeout habria "arreglado" un sintoma
 inexistente y ocultado la causa real. Distinguir las dos cosas importa tanto como arreglar: el 429
 es determinista y pasa siempre; este dependia del entorno.
+
+
+### Hallazgo #22: escribi el comentario que describia el error mientras lo cometia
+
+Al portar Promtail puse `cri: {}` en el pipeline, y en el encabezado del manifiesto escribi esto
+para justificarlo:
+
+> "Dejar `docker: {}` no da error visible: Promtail arranca, la probe pasa, y los logs llegan a
+> Loki **sin parsear**, como una sola cadena inutil. Es la clase de fallo que se ve solo mirando el
+> resultado en Grafana, no el estado del pod."
+
+**Describi con precision el fallo que estaba cometiendo, en el comentario que lo justificaba.**
+Tenia razon sobre el modo de falla y me equivoque sobre la direccion: asumi que Kubernetes implica
+containerd, y **Docker Desktop usa dockerd**. Sus logs son JSON de Docker, igual que en compose.
+
+Como se vio -- comparando dos pantallas, no leyendo nada:
+
+| | Lo que mostraba Grafana |
+|---|---|
+| **3005** (compose) | `level=info ts=... caller=flush.go:167 msg="flushing stream"` |
+| **3006** (Kubernetes) | `{"log":"...\u0009info\u0009TracesExporter...","stream":"stderr","time":"..."}` |
+
+Mientras tanto: pod `Ready`, probe en verde, `daemonset successfully rolled out`, y el job de kind
+habria pasado igual. **Ningun chequeo de este proyecto --ni los healthchecks, ni las probes, ni el
+CI, ni el test de integracion-- puede detectar esto.** Solo se ve con el resultado a la vista.
+
+Lo encontro Isabel, pidiendo "verificar lo de grafana". Es el segundo hallazgo que sale de una
+observacion suya sin que ella supiera lo que estaba senalando (el otro es el #18, los volumenes).
+
+### Deuda #17: el mismo manifiesto necesita configuraciones distintas por runtime
+
+El arreglo del #22 abre un problema que no se puede cerrar sin elegir:
+
+| Entorno | Runtime | Stage correcto |
+|---|---|---|
+| Docker Desktop (la demo) | dockerd | `docker: {}` |
+| kind (el CI) | containerd | `cri: {}` |
+| Clusters reales (GKE, EKS...) | containerd | `cri: {}` |
+
+**El manifiesto correcto para la demo es el incorrecto para el pipeline.** Hoy se prioriza el
+entorno de la demo y queda anotado; las salidas reales son dos: detectar el runtime al arrancar, o
+mantener overlays por entorno (kustomize). Ninguna se hace hoy.
+
+Vale la pena decir lo que esto significa: **es la tesis de esta zona aplicada al ultimo archivo que
+escribi, y en su forma mas incomoda.** Los 21 hallazgos anteriores eran cosas que se podian
+arreglar para que funcionaran igual en los dos entornos. Este no: la diferencia esta en el runtime,
+por debajo de todo lo que este equipo controla. A veces "que funcione igual en todos lados" no es
+una meta alcanzable, y lo unico honesto es documentar cual elegiste y por que.
+
+### Ruido eliminado: el plano de control fuera de Loki
+
+Promtail intentaba leer los pods de `kube-system` (coredns, kube-proxy, storage-provisioner,
+vpnkit-controller) y llenaba Loki de `failed to tail file, stat failed`. Se agrego un `drop` por
+namespace.
+
+No es solo cosmetico: **los logs del plano de control de Kubernetes no son observabilidad de esta
+aplicacion.** Quien busque un error quiere ver los microservicios, no el DNS interno del cluster.
 
 ### Estado final verificado
 

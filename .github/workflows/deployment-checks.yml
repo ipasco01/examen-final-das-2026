@@ -237,8 +237,87 @@ jobs:
             --from-literal=NOTIFICACIONES_DB_PASSWORD=ci-notificaciones \
             --from-literal=RABBITMQ_DEFAULT_USER=ci-broker \
             --from-literal=RABBITMQ_DEFAULT_PASS=ci-broker-pass \
-            --from-literal=RABBITMQ_URL=amqp://ci-broker:ci-broker-pass@rabbitmq-service:5672
+            --from-literal=RABBITMQ_URL=amqp://ci-broker:ci-broker-pass@rabbitmq-service:5672 \
+            --from-literal=GRAFANA_ADMIN_PASSWORD=ci-grafana
           kubectl create secret generic app-jwt-secret --from-literal=JWT_SECRET=ci-jwt-secret
+
+      - name: Ninguna clave de Secret referenciada queda sin crear
+        # AGREGADO EL 20/07 PORQUE ESTE JOB VOLVIO A FALLAR, y por la misma causa de fondo que la
+        # vez anterior: un requisito que vive en dos archivos y solo se actualizo en uno.
+        #
+        # grafana.yaml pide `GRAFANA_ADMIN_PASSWORD` y el paso de arriba creaba 8 claves, ninguna
+        # con ese nombre. Un secretKeyRef a una clave inexistente NO es un error de kubectl apply:
+        # el Deployment se crea sin protestar y el pod queda en CreateContainerConfigError. Nunca
+        # llega a Ready, y lo unico que se ve 180 segundos despues es
+        #   "0 of 1 updated replicas are available"
+        # que no menciona ni el Secret ni la clave. Diagnostico caro para una causa trivial.
+        #
+        # Agregar la clave arregla HOY. Este paso arregla MAÑANA: compara lo que los manifiestos
+        # piden contra lo que el cluster tiene, asi que el proximo secretKeyRef que alguien agregue
+        # sin tocar el CI falla aca, en dos segundos y diciendo exactamente que falta.
+        run: |
+          python3 - <<'EOF'
+          import yaml, glob, subprocess, sys, json
+
+          pedidas = set()
+          def buscar(nodo):
+              if isinstance(nodo, dict):
+                  ref = nodo.get('secretKeyRef')
+                  if isinstance(ref, dict) and 'name' in ref and 'key' in ref:
+                      pedidas.add((ref['name'], ref['key']))
+                  for v in nodo.values():
+                      buscar(v)
+              elif isinstance(nodo, list):
+                  for v in nodo:
+                      buscar(v)
+
+          for f in glob.glob('kubernetes-manifests/*.yaml'):
+              # kong-security.yaml no se aplica en este job (usa CRDs que no estan instalados).
+              if f.endswith('kong-security.yaml'):
+                  continue
+              for doc in yaml.safe_load_all(open(f)):
+                  buscar(doc)
+
+          existentes = set()
+          for nombre in sorted({n for n, _ in pedidas}):
+              r = subprocess.run(['kubectl', 'get', 'secret', nombre, '-o', 'json'],
+                                 capture_output=True, text=True)
+              if r.returncode != 0:
+                  print(f"::error::el Secret '{nombre}' no existe en el cluster")
+                  continue
+              for k in json.loads(r.stdout).get('data', {}):
+                  existentes.add((nombre, k))
+
+          faltan = sorted(pedidas - existentes)
+          if faltan:
+              for n, k in faltan:
+                  print(f"::error::{n}: falta la clave '{k}'. La pide un manifiesto y el paso "
+                        f"'Crear los Secrets que no se versionan' no la genera. El pod quedaria "
+                        f"en CreateContainerConfigError y el rollout expiraria sin explicar por que.")
+              sys.exit(1)
+          print(f"OK: las {len(pedidas)} claves referenciadas por los manifiestos existen")
+          EOF
+
+      - name: Crear los ConfigMaps que se generan desde archivos
+        # AGREGADO EL 20/07 PORQUE EL JOB FALLO SIN ESTO.
+        #
+        # Tres ConfigMaps NO estan dentro de kubernetes-manifests/: se generan desde los archivos
+        # reales para no duplicar contenido que se desincroniza (el dashboard de Grafana son ~590
+        # lineas de JSON que el Equipo 4 edita seguido). La decision esta explicada en
+        # grafana.yaml, y su costo asumido era que `kubectl apply -f kubernetes-manifests/` deja
+        # de bastar.
+        #
+        # **Ese costo quedo escrito y no se pago.** En grafana.yaml dice literalmente que estos
+        # comandos "van en la seccion 4 del checklist y en el job k8s-arranque-real del CI" -- y
+        # solo fueron al checklist. El job apuntaba a montar volumenes de ConfigMaps inexistentes:
+        # prometheus y grafana quedaban en ContainerCreating para siempre y el rollout expiraba.
+        #
+        # Es el mismo patron que este workflow persigue, cometido en el propio workflow: el
+        # requisito documentado y no ejecutado.
+        run: |
+          kubectl create configmap prometheus-rules --from-file=alert_rules.yml
+          kubectl create configmap grafana-datasources --from-file=grafana/provisioning/datasources/
+          kubectl create configmap grafana-dashboards --from-file=grafana/provisioning/dashboards/
 
       - name: Desplegar
         # Se excluyen dos archivos, y el motivo esta documentado en el checklist:
