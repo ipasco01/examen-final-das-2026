@@ -6,17 +6,17 @@
     <title>Cliente Simulador - Tutorías</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 2rem; background-color: #f4f7f6; }
-        .container { max-width: 600px; margin: 0 auto; background: #fff; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
-        h1 { text-align: center; color: #333; }
+        h1 { text-align: center; color: #333; grid-column: 1 / -1; margin: 0 0 0.5rem; }
+        .layout { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: minmax(340px, 460px) 1fr; gap: 1.5rem; align-items: start; }
+        @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+        .panel { background: #fff; padding: 1.5rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .panel h2 { margin-top: 0; font-size: 1.1rem; color: #333; }
         form { display: grid; grid-template-columns: 1fr; gap: 1rem; }
         .form-group { display: grid; gap: 0.5rem; }
         label { font-weight: 600; color: #555; }
         input, button { padding: 0.75rem; border: 1px solid #ddd; border-radius: 4px; font-size: 1rem; }
         button { background-color: #007bff; color: white; font-weight: 700; cursor: pointer; transition: background-color 0.2s; }
         button:hover { background-color: #0056b3; }
-        #resultado { margin-top: 1.5rem; padding: 1rem; background: #eee; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; }
-        .error { background: #ffebee; color: #b71c1c; }
-        .success { background: #e8f5e9; color: #1b5e20; }
         .secondary-btn { background-color: #6c757d; margin-top: 0.5rem; }
         .secondary-btn:hover { background-color: #545b62; }
         #tutorias-lista { margin-top: 1.5rem; display: grid; gap: 0.75rem; }
@@ -32,55 +32,81 @@
         .cancelar-btn { background: none; border: 1px solid #b71c1c; color: #b71c1c; padding: 0.3rem 0.6rem; font-size: 0.8rem; font-weight: 600; border-radius: 4px; }
         .cancelar-btn:hover { background: #b71c1c; color: white; }
         .cancelar-btn:disabled { opacity: 0.5; cursor: default; }
+
+        /* --- Columna derecha: log de payloads, para mostrarle al profesor qué respondió cada llamada --- */
+        #payload-log { display: grid; gap: 1rem; max-height: 80vh; overflow-y: auto; }
+        .payload-entry { border-radius: 6px; overflow: hidden; border: 1px solid #ddd; }
+        .payload-entry .cabecera { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.9rem; font-size: 0.85rem; font-weight: 700; }
+        .payload-entry .hora { font-weight: 400; opacity: 0.75; }
+        .payload-entry pre { margin: 0; padding: 0.9rem; background: #263238; color: #eceff1; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; word-wrap: break-word; max-height: 260px; overflow-y: auto; }
+        .cabecera-SOLICITAR { background: #e3f2fd; color: #0d47a1; }
+        .cabecera-CANCELAR { background: #eceff1; color: #37474f; }
+        .cabecera-REPROGRAMAR { background: #e0f2f1; color: #0d6e6e; }
+        .cabecera-ERROR { background: #ffebee; color: #b71c1c; }
+        .payload-vacio { color: #777; font-style: italic; }
+        .reprogramar-btn { background: none; border: 1px solid #0d6e6e; color: #0d6e6e; padding: 0.3rem 0.6rem; font-size: 0.8rem; font-weight: 600; border-radius: 4px; margin-right: 0.4rem; }
+        .reprogramar-btn:hover { background: #0d6e6e; color: white; }
+        .reprogramar-btn:disabled { opacity: 0.5; cursor: default; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Simulador de Tutorías</h1>
-        <form id="tutoria-form">
-            <fieldset>
-                <legend><strong>1. Autenticación</strong></legend>
-                <div class="form-group">
-                    <label for="username">Usuario (estudiante):</label>
-                    <input type="text" id="username" name="username" value="ana.torres" required>
-                </div>
-                <div class="form-group">
-                    <label for="password">Contraseña:</label>
-                    <input type="password" id="password" name="password" value="password_ana" required>
-                </div>
-            </fieldset>
+    <h1>Simulador de Tutorías</h1>
+    <div class="layout">
+        <!-- Columna izquierda: la simulación (formularios + estado del cliente) -->
+        <div class="panel">
+            <h2>Simulación</h2>
+            <form id="tutoria-form">
+                <fieldset>
+                    <legend><strong>1. Autenticación</strong></legend>
+                    <div class="form-group">
+                        <label for="username">Usuario (estudiante):</label>
+                        <input type="text" id="username" name="username" value="ana.torres" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Contraseña:</label>
+                        <input type="password" id="password" name="password" value="password_ana" required>
+                    </div>
+                </fieldset>
 
-            <fieldset>
-                <legend><strong>2. Datos de la Tutoría</strong></legend>
-                <div class="form-group">
-                    <label for="idTutor">ID del Tutor:</label>
-                    <input type="text" id="idTutor" name="idTutor" value="t09876" required>
-                </div>
-                <div class="form-group">
-                    <label for="fecha">Fecha y Hora (ISO 8601):</label>
-                    <input type="text" id="fecha" name="fecha" value="2025-12-20T10:00:00Z" required>
-                </div>
-                <div class="form-group">
-                    <label for="materia">Materia:</label>
-                    <input type="text" id="materia" name="materia" value="Física Cuántica" required>
-                </div>
-                 <div class="form-group">
-                    <label for="duracion">Duración (minutos):</label>
-                    <input type="number" id="duracion" name="duracion" value="60" required>
-                </div>
-            </fieldset>
+                <fieldset>
+                    <legend><strong>2. Datos de la Tutoría</strong></legend>
+                    <div class="form-group">
+                        <label for="idTutor">ID del Tutor:</label>
+                        <input type="text" id="idTutor" name="idTutor" value="t09876" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="fecha">Fecha y Hora (ISO 8601):</label>
+                        <input type="text" id="fecha" name="fecha" value="2025-12-20T10:00:00Z" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="materia">Materia:</label>
+                        <input type="text" id="materia" name="materia" value="Física Cuántica" required>
+                    </div>
+                     <div class="form-group">
+                        <label for="duracion">Duración (minutos):</label>
+                        <input type="number" id="duracion" name="duracion" value="60" required>
+                    </div>
+                </fieldset>
 
-            <button type="submit" id="submit-btn">Solicitar Tutoría</button>
-            <button type="button" id="listar-btn" class="secondary-btn">Ver mis tutorías</button>
-        </form>
+                <button type="submit" id="submit-btn">Solicitar Tutoría</button>
+                <button type="button" id="listar-btn" class="secondary-btn">Ver mis tutorías</button>
+            </form>
 
-        <div id="resultado">Esperando solicitud...</div>
-        <div id="tutorias-lista"></div>
+            <div id="tutorias-lista"></div>
+        </div>
+
+        <!-- Columna derecha: las respuestas crudas (payloads) de cada llamada, para mostrar al profesor -->
+        <div class="panel">
+            <h2>Respuestas (payloads)</h2>
+            <div id="payload-log">
+                <p class="payload-vacio">Esperando solicitud...</p>
+            </div>
+        </div>
     </div>
 
     <script>
         const form = document.getElementById('tutoria-form');
-        const resultadoDiv = document.getElementById('resultado');
+        const payloadLogDiv = document.getElementById('payload-log');
         const submitBtn = document.getElementById('submit-btn');
         const listarBtn = document.getElementById('listar-btn');
         const tutoriasListaDiv = document.getElementById('tutorias-lista');
@@ -100,6 +126,27 @@
             } catch (e) {
                 return isoString;
             }
+        };
+
+        // Log de payloads (columna derecha): cada acción (solicitar/cancelar, éxito o error) queda
+        // registrada acá, más reciente arriba, para poder mostrarle al profesor la traza completa
+        // de una demo sin perder la respuesta anterior al ejecutar la siguiente acción.
+        const registrarPayload = (etiqueta, payload, esError = false) => {
+            if (payloadLogDiv.querySelector('.payload-vacio')) payloadLogDiv.innerHTML = '';
+
+            const entry = document.createElement('div');
+            entry.className = 'payload-entry';
+            const claseCabecera = esError ? 'cabecera-ERROR' : `cabecera-${escapeHtml(etiqueta)}`;
+            const hora = new Intl.DateTimeFormat('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date());
+            entry.innerHTML = `
+                <div class="cabecera ${claseCabecera}">
+                    <span>${escapeHtml(etiqueta)}${esError ? ' (ERROR)' : ''}</span>
+                    <span class="hora">${hora}</span>
+                </div>
+                <pre></pre>
+            `;
+            entry.querySelector('pre').textContent = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+            payloadLogDiv.prepend(entry);
         };
 
         const cargarTutorias = async () => {
@@ -124,15 +171,14 @@
 
                 renderTutorias(tutorias);
             } catch (error) {
-                tutoriasListaDiv.innerHTML = `<div class="error" style="padding: 1rem; border-radius: 4px;">Error: ${escapeHtml(error.message)}</div>`;
+                tutoriasListaDiv.innerHTML = `<div class="error" style="padding: 1rem; border-radius: 4px; background: #ffebee; color: #b71c1c;">Error: ${escapeHtml(error.message)}</div>`;
             } finally {
                 listarBtn.disabled = false;
             }
         };
 
         const cancelarTutoria = async (idTutoria, botonEl) => {
-            if (!confirm('¿Seguro que querés cancelar esta tutoría? Se liberará el horario del tutor.')) {
-                return;
+            if (!confirm('¿Seguro que quieres cancelar esta tutoría? Se liberará el horario del tutor.')) {    return;
             }
 
             const username = document.getElementById('username').value;
@@ -151,14 +197,62 @@
                 const resultado = await response.json();
 
                 if (!response.ok) {
+                    registrarPayload('CANCELAR', resultado, true);
                     throw new Error(resultado.error ? JSON.stringify(resultado.error) : 'Error desconocido');
                 }
 
+                registrarPayload('CANCELAR', resultado);
+                // La cancelación cambia el estado de la tutoría (CONFIRMADA -> CANCELADA): refrescamos
+                // la lista de una vez para que quede reflejado sin que el usuario tenga que apretar
+                // "Ver mis tutorías" de nuevo.
                 await cargarTutorias();
             } catch (error) {
                 alert(`No se pudo cancelar: ${error.message}`);
                 botonEl.disabled = false;
                 botonEl.textContent = 'Cancelar';
+            }
+        };
+
+        const reprogramarTutoria = async (tutoria, botonEl) => {
+            const nuevaFecha = prompt(
+                'Nueva fecha y hora (ISO 8601, ej. 2026-11-15T16:00:00.000Z):',
+                tutoria.fecha
+            );
+            if (!nuevaFecha) return; // canceló el prompt
+
+            if (Number.isNaN(new Date(nuevaFecha).getTime())) {
+                alert('La fecha ingresada no es válida. Usá formato ISO 8601.');
+                return;
+            }
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            botonEl.disabled = true;
+            botonEl.textContent = 'Reprogramando...';
+
+            try {
+                const response = await fetch(`/api/tutorias/${encodeURIComponent(tutoria.idTutoria)}/reprogramar`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password, nuevaFecha, duracionMinutos: 60 })
+                });
+
+                const resultado = await response.json();
+
+                if (!response.ok) {
+                    registrarPayload('REPROGRAMAR', resultado, true);
+                    throw new Error(resultado.error ? JSON.stringify(resultado.error) : 'Error desconocido');
+                }
+
+                registrarPayload('REPROGRAMAR', resultado);
+                // La reprogramación cambia la fecha (y puede cambiar el idBloqueo) de la tutoría:
+                // refrescamos la lista de una vez, mismo criterio que cancelarTutoria.
+                await cargarTutorias();
+            } catch (error) {
+                alert(`No se pudo reprogramar: ${error.message}`);
+                botonEl.disabled = false;
+                botonEl.textContent = 'Reprogramar';
             }
         };
 
@@ -175,7 +269,7 @@
                 card.innerHTML = `
                     <div class="fila-top">
                         <span class="estado estado-${escapeHtml(t.estado)}">${escapeHtml(t.estado)}</span>
-                        ${t.estado === 'CONFIRMADA' ? '<button type="button" class="cancelar-btn">Cancelar</button>' : ''}
+                        ${t.estado === 'CONFIRMADA' ? '<span><button type="button" class="reprogramar-btn">Reprogramar</button><button type="button" class="cancelar-btn">Cancelar</button></span>' : ''}
                     </div>
                     <strong>${escapeHtml(t.materia)}</strong> con ${escapeHtml(t.tutorNombre || t.idTutor)}
                     <div class="fecha">${escapeHtml(formatearFecha(t.fecha))}</div>
@@ -184,6 +278,10 @@
                 const botonCancelar = card.querySelector('.cancelar-btn');
                 if (botonCancelar) {
                     botonCancelar.addEventListener('click', () => cancelarTutoria(t.idTutoria, botonCancelar));
+                }
+                const botonReprogramar = card.querySelector('.reprogramar-btn');
+                if (botonReprogramar) {
+                    botonReprogramar.addEventListener('click', () => reprogramarTutoria(t, botonReprogramar));
                 }
                 tutoriasListaDiv.appendChild(card);
             });
@@ -194,12 +292,11 @@
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
-            resultadoDiv.textContent = 'Procesando...';
-            resultadoDiv.className = '';
             submitBtn.disabled = true;
 
             const formData = new FormData(form);
             const data = Object.fromEntries(formData.entries());
+            let payloadYaRegistrado = false;
 
             try {
                 const response = await fetch('/api/solicitar', {
@@ -213,18 +310,25 @@
                 const resultado = await response.json();
 
                 if (!response.ok) {
-                    // Si el servidor devuelve un error (4xx, 5xx)
+                    // Si el servidor devuelve un error (4xx, 5xx), el payload real del backend
+                    // igual se muestra en el log de la derecha.
+                    registrarPayload('SOLICITAR', resultado, true);
+                    payloadYaRegistrado = true;
                     throw new Error(resultado.error ? JSON.stringify(resultado.error) : 'Error desconocido');
                 }
 
                 // Éxito
-                resultadoDiv.textContent = JSON.stringify(resultado, null, 2);
-                resultadoDiv.className = 'success';
+                registrarPayload('SOLICITAR', resultado);
+                // La tutoría recién creada debe aparecer de una en la lista, sin depender de que el
+                // usuario apriete "Ver mis tutorías" a mano.
+                await cargarTutorias();
 
             } catch (error) {
-                // Error de red o error lanzado
-                resultadoDiv.textContent = `Error: ${error.message}`;
-                resultadoDiv.className = 'error';
+                // Error de red (no llegó a responder el servidor): acá sí no hay payload de backend
+                // que mostrar, así que se registra el mensaje de error tal cual.
+                if (!payloadYaRegistrado) {
+                    registrarPayload('SOLICITAR', `Error: ${error.message}`, true);
+                }
             } finally {
                 submitBtn.disabled = false;
             }
