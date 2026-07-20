@@ -15,9 +15,24 @@ alerting:
 scrape_configs:
   - job_name: 'tutorias_services'
     static_configs:
-      - targets:
-        - 'ms-auth:4000'
-        - 'ms-usuarios:3001'
-        - 'ms-agenda:3002'
-        - 'ms-notificaciones:3003'
-        - 'ms-tutorias:3000'
+      # Label service_name por target: sin esto, la métrica `up` (que genera Prometheus,
+      # no la app) no trae service_name -- solo lo traen las métricas HTTP propias via
+      # express-prom-bundle. El panel "Servicios activos (up)" filtra por
+      # up{service_name!=""}, así que sin este label nunca matchea y siempre sale "No data",
+      # incluso con todo sano. Con esto, up{service_name="MS_Usuarios"} pasa a 0 apenas se
+      # cae el contenedor, sin depender de que haya tráfico HTTP real.
+      - targets: ['ms-auth:4000']
+        labels:
+          service_name: 'MS_Auth'
+      - targets: ['ms-usuarios:3001']
+        labels:
+          service_name: 'MS_Usuarios'
+      - targets: ['ms-agenda:3002']
+        labels:
+          service_name: 'MS_Agenda'
+      - targets: ['ms-notificaciones:3003']
+        labels:
+          service_name: 'MS_Notificaciones'
+      - targets: ['ms-tutorias:3000']
+        labels:
+          service_name: 'MS_Tutorias'
