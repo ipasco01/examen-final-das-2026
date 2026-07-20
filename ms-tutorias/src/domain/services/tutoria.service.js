@@ -318,4 +318,145 @@ const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, co
 const cancelarTutoria = (idTutoria, idEstudianteSolicitante, correlationId, authHeader) =>
     conTimeoutDeSaga(() => ejecutarCancelacionTutoria(idTutoria, idEstudianteSolicitante, correlationId, authHeader));
 
-module.exports = { solicitarTutoria, obtenerTutoriaPorId, listarTutoriasPorEstudiante, cancelarTutoria };
+// Reprogramación de una tutoría CONFIRMADA (completa el alcance Rep&Cancel del equipo 6).
+//
+// Orden deliberado RESERVAR-PRIMERO, LIBERAR-DESPUÉS: el peor caso de este orden es un doble
+// bloqueo temporal (el viejo queda tomado hasta que el worker de compensaciones lo libere),
+// mientras que el orden inverso podría dejar al estudiante SIN ningún horario (liberó el viejo y
+// otro le ganó el nuevo antes de re-bloquear). Degradación segura > pérdida de la reserva.
+//
+// Manejo de fallas por tramo:
+//  - Falla bloqueando el NUEVO  -> nada que limpiar; la tutoría conserva su horario original (409/5xx).
+//  - Falla el UPDATE tras bloquear -> se compensa el bloqueo NUEVO (reintentos y, si también falla,
+//    compensaciones_pendientes); la tutoría conserva su horario original y se propaga el error.
+//  - Falla liberar el VIEJO tras el UPDATE -> la reprogramación YA es efectiva (200); la liberación
+//    queda en compensaciones_pendientes y la resuelve el worker en segundo plano (mismo criterio
+//    que la cancelación: la limpieza de agenda es preocupación operativa, no del estudiante).
+const ejecutarReprogramacionTutoria = async (idTutoria, idEstudianteSolicitante, datos, correlationId, authHeader) => {
+    const { nuevaFecha, duracionMinutos } = datos;
+    const trackCid = (message, status = 'INFO') => track(correlationId, message, status);
+
+    const tutoria = await tutoriaRepository.findById(idTutoria);
+    // Mismo criterio de ownership que cancelar: "no existe" y "no es tuya" responden 404 uniforme.
+    if (!tutoria || tutoria.idestudiante !== idEstudianteSolicitante) {
+        throw Object.assign(new Error('Tutoría no encontrada.'), { statusCode: 404 });
+    }
+    if (tutoria.estado !== 'CONFIRMADA') {
+        throw Object.assign(
+            new Error(`Solo se puede reprogramar una tutoría CONFIRMADA (estado actual: ${tutoria.estado}).`),
+            { statusCode: 409 }
+        );
+    }
+    if (new Date(nuevaFecha).getTime() <= Date.now()) {
+        throw Object.assign(new Error('La nueva fecha debe ser una fecha futura.'), { statusCode: 400 });
+    }
+    if (new Date(nuevaFecha).getTime() === new Date(tutoria.fecha).getTime()) {
+        throw Object.assign(new Error('La nueva fecha es igual a la fecha actual de la tutoría.'), { statusCode: 400 });
+    }
+
+    const idBloqueoViejo = tutoria.idbloqueo;
+    trackCid(`Reprogramando tutoría ${idTutoria} hacia ${nuevaFecha}...`);
+
+    // --- 0. Resolver email del estudiante para la notificación (y de paso validar que sigue existiendo) ---
+    const estudiante = await usuariosClient.getUsuario('estudiantes', idEstudianteSolicitante, correlationId, authHeader);
+    if (!estudiante) throw Object.assign(new Error('Estudiante no encontrado'), { statusCode: 404 });
+
+    // --- 1. Verificar disponibilidad del nuevo horario ---
+    trackCid('Verificando disponibilidad del nuevo horario...');
+    const disponible = await agendaClient.verificarDisponibilidad(tutoria.idtutor, nuevaFecha, correlationId, authHeader);
+    if (!disponible) {
+        throw Object.assign(new Error('El nuevo horario no está disponible'), { statusCode: 409 });
+    }
+
+    // --- 2. RESERVAR-PRIMERO: bloquear el nuevo horario ---
+    trackCid('Bloqueando el nuevo horario en agenda...');
+    const payloadAgenda = { fechaInicio: nuevaFecha, duracionMinutos, idEstudiante: tutoria.idestudiante };
+    const bloqueoNuevo = await agendaClient.bloquearAgenda(tutoria.idtutor, payloadAgenda, correlationId, authHeader);
+    const idBloqueoNuevo = bloqueoNuevo.idBloqueo || bloqueoNuevo.idbloqueo;
+    trackCid(`Nuevo horario bloqueado. ID: ${idBloqueoNuevo}`);
+
+    // --- 3. UPDATE (fecha + idBloqueo nuevo) + notificación en la misma transacción (outbox) ---
+    const payloadNotificacion = {
+        destinatario: estudiante.email,
+        asunto: `Tutoría de ${tutoria.materia} reprogramada`,
+        cuerpo: `Hola ${estudiante.nombrecompleto || estudiante.nombreCompleto}, tu tutoría con ${tutoria.nombretutor || tutoria.idtutor} se movió a ${nuevaFecha}.`,
+        correlationId
+    };
+
+    let tutoriaReprogramada;
+    try {
+        trackCid('Actualizando la tutoría y encolando notificación (outbox)...');
+        // Nota: NO se envía `estado` -- la tutoría sigue CONFIRMADA y la máquina de estados del
+        // repositorio (correctamente) rechaza transiciones al mismo estado. Solo cambian fecha e idBloqueo.
+        tutoriaReprogramada = await tutoriaRepository.save(
+            { idTutoria, fecha: new Date(nuevaFecha), error: null, idBloqueo: idBloqueoNuevo },
+            { outboxNotificacion: payloadNotificacion }
+        );
+    } catch (err) {
+        // El UPDATE falló DESPUÉS de bloquear el nuevo horario: compensar ese bloqueo para no
+        // dejarlo huérfano. La tutoría sigue CONFIRMADA con su horario original.
+        trackCid(`Falló el UPDATE de la reprogramación: ${err.message}. Compensando el bloqueo nuevo...`, 'ERROR');
+        let liberadoNuevo = false;
+        for (let intento = 1; intento <= COMPENSACION_MAX_INTENTOS && !liberadoNuevo; intento++) {
+            try {
+                await agendaClient.cancelarBloqueo(idBloqueoNuevo, correlationId, authHeader);
+                liberadoNuevo = true;
+                trackCid(`Bloqueo nuevo compensado en intento ${intento}.`, 'ERROR');
+            } catch (compErr) {
+                trackCid(`Intento ${intento}/${COMPENSACION_MAX_INTENTOS} de compensar el bloqueo nuevo falló: ${compErr.message}`, 'ERROR');
+                if (intento < COMPENSACION_MAX_INTENTOS) await sleep(COMPENSACION_BASE_DELAY_MS * intento);
+            }
+        }
+        if (!liberadoNuevo) {
+            compensacionFallidaTotal.inc({ etapa: 'reprogramacion' });
+            // Best effort: registrar la liberación pendiente. Si la BD sigue caída (causa probable
+            // del fallo original), esto también fallará; queda el evento de tracking como rastro.
+            try {
+                await tutoriaRepository.save(
+                    { idTutoria, error: null },
+                    { compensacionPendiente: { idBloqueo: idBloqueoNuevo, idTutor: tutoria.idtutor, correlationId, motivo: `Reprogramación fallida de ${idTutoria}: bloqueo nuevo sin liberar` } }
+                );
+                trackCid('Liberación del bloqueo nuevo registrada para reintento en segundo plano.', 'ERROR');
+            } catch (regErr) {
+                trackCid(`CRÍTICO: no se pudo registrar la compensación del bloqueo nuevo (${idBloqueoNuevo}): ${regErr.message}. Verificar manualmente en ms-agenda.`, 'ERROR');
+            }
+        }
+        throw Object.assign(new Error(`No se pudo reprogramar la tutoría: ${err.message}`), { statusCode: 500 });
+    }
+
+    // --- 4. LIBERAR-DESPUÉS: soltar el horario viejo (la reprogramación ya es efectiva) ---
+    if (idBloqueoViejo) {
+        trackCid('Liberando el horario anterior en ms-agenda...');
+        let liberadoViejo = false;
+        let ultimoError;
+        for (let intento = 1; intento <= COMPENSACION_MAX_INTENTOS && !liberadoViejo; intento++) {
+            try {
+                await agendaClient.cancelarBloqueo(idBloqueoViejo, correlationId, authHeader);
+                liberadoViejo = true;
+                trackCid(`Horario anterior liberado en intento ${intento}.`);
+            } catch (err) {
+                ultimoError = err;
+                trackCid(`Intento ${intento}/${COMPENSACION_MAX_INTENTOS} de liberar el horario anterior falló: ${err.message}`, 'ERROR');
+                if (intento < COMPENSACION_MAX_INTENTOS) await sleep(COMPENSACION_BASE_DELAY_MS * intento);
+            }
+        }
+        if (!liberadoViejo) {
+            compensacionFallidaTotal.inc({ etapa: 'reprogramacion' });
+            await tutoriaRepository.save(
+                { idTutoria, error: null },
+                { compensacionPendiente: { idBloqueo: idBloqueoViejo, idTutor: tutoria.idtutor, correlationId, motivo: `Reprogramación de ${idTutoria}: ${ultimoError.message}` } }
+            );
+            trackCid('Liberación del horario anterior registrada para reintento en segundo plano.', 'ERROR');
+        }
+    } else {
+        trackCid('La tutoría no tenía idBloqueo persistido; no hay horario anterior que liberar.', 'ERROR');
+    }
+
+    trackCid('Tutoría reprogramada.');
+    return tutoriaReprogramada;
+};
+
+const reprogramarTutoria = (idTutoria, idEstudianteSolicitante, datos, correlationId, authHeader) =>
+    conTimeoutDeSaga(() => ejecutarReprogramacionTutoria(idTutoria, idEstudianteSolicitante, datos, correlationId, authHeader));
+
+module.exports = { solicitarTutoria, obtenerTutoriaPorId, listarTutoriasPorEstudiante, cancelarTutoria, reprogramarTutoria };

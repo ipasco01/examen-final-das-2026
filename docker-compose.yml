@@ -218,6 +218,7 @@ services:
       - DB_PASSWORD=${TUTORIAS_DB_PASSWORD:?Definí TUTORIAS_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_tutorias
       - SERVICE_NAME=MS_Tutorias
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
     depends_on:
       ms-auth:
@@ -519,7 +520,6 @@ services:
       loki:
         condition: service_healthy
 
-  
 # --- Definición de Volúmenes ---
 volumes:
   postgres_data_auth:
