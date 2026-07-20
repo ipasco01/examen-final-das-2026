@@ -3,8 +3,8 @@
 Qué debe existir y verificarse **antes** de dar por desplegado el sistema. Cada punto es
 verificable con un comando: si no se puede comprobar, no está hecho.
 
-Rama: `equipo5-deployment` · Ultima verificacion completa: 19/07 noche, **20 servicios en compose
-(19 con healthcheck)** y 12 workloads en Kubernetes (6 StatefulSets + 5 Deployments + ingress).
+Rama: `equipo5-deployment` · Ultima verificacion completa: 20/07, **22 servicios en compose
+(21 con healthcheck)** y 12 workloads en Kubernetes (6 StatefulSets + 5 Deployments + ingress).
 
 La tag de imagen NO se fija en este documento a proposito: es `git rev-parse --short HEAD` del
 commit desplegado, y queda obsoleta en cuanto alguien commitea. Ver seccion 2.
@@ -68,7 +68,7 @@ de publicarse.** Nunca `latest` en un manifiesto.
 ```powershell
 $env:IMAGE_TAG = git rev-parse --short HEAD
 docker compose up -d --build
-docker compose ps                                  # 20 servicios arriba
+docker compose ps                                  # 22 servicios arriba
 foreach ($p in 4000,3001,3002,3003,3000) { curl.exe -m 5 -f "http://localhost:$p/metrics" > $null; "$p -> $LASTEXITCODE" }
 ```
 
@@ -79,8 +79,8 @@ ms-notificaciones 3003, ms-tutorias 3000.
 
 ## 3. Docker Compose
 
-- [ ] Los 20 servicios levantan con un solo `docker compose up -d`.
-- [ ] **19 de los 20** servicios llegan a `healthy` (no solo `Up`). El unico restante es
+- [ ] Los 22 servicios levantan con un solo `docker compose up -d`.
+- [ ] **21 de los 22** servicios llegan a `healthy` (no solo `Up`). El unico restante es
       `otel-collector`, y la razon esta comprobada y tiene dueño.
 
 **Hallazgo del 19/07 (noche): `ms-notificaciones` sin base de datos.** El merge del Equipo 2
@@ -111,10 +111,79 @@ la direccion del error -- las nueve veces anteriores el manifiesto de K8s iba at
 esta vez fue al reves. La leccion no es "revisar K8s", es que **cualquier entorno que no se
 ejecute se desincroniza**, sin importar cual.
 
+**Hallazgo del 20/07: dos servicios corrian con `:latest` y mi propio lint no lo veia.**
+`client-sim` y `tracking-dashboard` declaraban `build:` pero no `image:`. Docker les genera el
+nombre a partir del proyecto y le agrega `:latest` -- la deuda que este PR supuestamente habia
+cerrado. Se descubrio leyendo la salida de un `docker compose build`
+(`naming to ...-client-sim:latest`), no por el chequeo que existe para detectar justamente eso.
+
+**Por que el lint fallaba.** Hacia `docker compose config | grep "image:.*:latest"`. Un servicio
+sin clave `image:` no produce ninguna linea `image:` en esa salida -- comprobado. El grep no
+encontraba nada y el job pasaba en verde. **Un grep solo puede fallar sobre lo que esta escrito, y
+aca el caso peligroso era la AUSENCIA de una clave.**
+
+Lo revelador es que el chequeo de `restart`, tres lineas mas abajo en el mismo workflow, nunca
+tuvo este problema: parsea el YAML y pregunta `if 'restart' not in s`. Pregunta por la ausencia.
+La tecnica correcta ya estaba en el archivo; el error fue elegir un grep para el chequeo de al
+lado. Corregido: ahora ambos parsean el YAML.
+
+**Hallazgo del 20/07: el CI no verificaba healthchecks -- justo la regla fundacional de esta zona.**
+El merge `b4d0a8a` del Equipo 4 incorporo `alertmanager` y `mailpit`. Los dos con `restart` y con
+imagen fijada por version: **incorporaron las dos reglas que este PR venia peleando**, lo cual es
+una buena noticia sobre el proceso. Pero los dos sin `healthcheck`, y **ningun job dijo nada**.
+
+El pipeline validaba `restart`, `:latest` y secretos. D1 -- "un proceso vivo pero sin responder
+figura como `Up` y compose lo da por bueno" -- era la unica regla de la politica sin chequeo
+automatico. La misma forma que el hueco del lint de `:latest`, dos horas antes: **un control que
+parece cubrir la politica y deja pasar lo que mas importa.**
+
+La diferencia, y por eso vale registrarlo aparte: este se encontro **revisando trabajo entrante
+antes de integrarlo**, no despues de que rompiera algo. Es el primero de los catorce hallazgos
+detectado de forma preventiva.
+
+Corregido en el mismo merge: healthcheck en ambos (`/-/healthy` en 9093, `/readyz` en 8025), el
+`depends_on: - mailpit` cambiado a `condition: service_healthy` -- Alertmanager arrancaba antes de
+que el SMTP escuchara, y una alerta disparada en esa ventana se perdia sin ruido -- y un chequeo
+nuevo en el workflow con una lista explicita de exenciones, hoy solo `otel-collector`.
+
+Verificado en las dos direcciones: el chequeo pasa con el compose corregido y **falla contra el
+estado exacto en que llego del Equipo 4**.
+
 **Limite honesto de nuestro propio CI:** el job `arranque-real` NO habria detectado esto. El
 servicio arranca bien y responde `/metrics`; el fallo aparece recien en la primera notificacion que
 intenta deduplicar. Para atraparlo hace falta un test de integracion que ejercite el flujo, no solo
-un chequeo de arranque. Queda como deuda #11.
+un chequeo de arranque. **Cerrado el 20/07** con `scripts/integracion-flujo-completo.sh`.
+
+**El test de integracion (deuda #11, cerrada).** Seis pasos: login, catalogo de tutores, solicitar,
+y despues dos EFECTOS que solo existen si la cadena completa funciono -- mas el rechazo de una
+materia incoherente, para que nadie borre esa validacion sin que salte.
+
+```bash
+bash scripts/integracion-flujo-completo.sh     # tambien corre en el job arranque-real
+```
+
+| Paso | Que verifica | Que hallazgo habria atrapado |
+|---|---|---|
+| 4 | fila en `logs_notificacion`, esperando con reintentos | **#10** -- la BD que no existia |
+| 5 | el endpoint protegido acepta el token | **#11** -- el `JWT_SECRET` faltante |
+| 6 | materia incoherente devuelve 400 | que alguien borre la validacion del paso 1b |
+
+Tres decisiones que valen mas que el script:
+
+1. **La materia se lee del sistema, no se hardcodea.** Sale de `GET /usuarios/tutores`. Si cambia
+   el seed, el test sigue andando -- el error opuesto al del formulario del simulador, que tenia la
+   fecha escrita a mano y caduco sola.
+2. **Sin `python3` ni `jq`: solo bash, curl, date, openssl y sed.** Corre igual en `ubuntu-latest`
+   y en Git Bash sobre Windows. Un chequeo que solo corre en el CI nadie lo ejecuta antes de
+   pushear, y entonces tiene el mismo problema que viene a resolver. La concesion es que parsear
+   JSON con `grep`/`sed` es fragil ante cambios de formato; queda dicho en el encabezado.
+3. **Horario aleatorio dentro del proximo año.** La v1 pedia siempre `hoy + 7 dias` y devolvia 409
+   en la segunda corrida, porque ms-agenda rechaza correctamente la reserva superpuesta. **Un test
+   que escribe datos reales no es repetible si el horario es fijo** -- y habria pasado
+   desapercibido, porque en CI el stack nace vacio en cada corrida: verde siempre, inservible en
+   local. Es la forma exacta de los hallazgos #10 y #11: sano en un entorno, roto en el otro.
+
+El punto 3 aparecio ejecutando el script, no escribiendolo. Sigue valiendo la regla.
 
 **Correccion del 19/07 — dos rondas, las dos las provoco la revision cruzada.**
 
@@ -127,7 +196,7 @@ resulto falsa para 3 de los 4:
 | `tempo` | Tiene shell y `/usr/bin/wget` | `wget /ready` |
 | `promtail` | Sin `wget`/`curl`/`nc`, pero con `bash` + `/dev/tcp` | socket TCP al 9080 |
 | `toxiproxy` | Sin shell, pero **con su propio cliente** `/toxiproxy-cli` | `CMD` (no `CMD-SHELL`) sobre `toxiproxy-cli list` |
-| `otel-collector` | Sin shell y sin cliente propio utilizable | Pendiente, ver abajo |
+| `otel-collector` | Sin shell; trae `/otelcol-contrib` pero sus 4 subcomandos son offline (`validate`, `components`, `help`, `completion`) -- ninguno consulta al collector corriendo | Imposible en compose sin cambiar la imagen base, ver abajo |
 
 **La segunda correccion fue la mas instructiva.** Tras arreglar `tempo` y `promtail`, este
 documento seguia diciendo que `toxiproxy` no podia tener healthcheck "por falta de shell". Eso era
@@ -140,10 +209,39 @@ Este chequeo ademas es **mejor** que el de un socket TCP: `toxiproxy-cli list` n
 el puerto 8474 escucha, sino que la API de administracion responde y devuelve la configuracion de
 proxies.
 
-**El unico pendiente real: `otel-collector`.** Sin shell y sin un cliente propio que sirva para
-consultarse a si mismo. La solucion existe pero **no esta en mi zona**: el collector trae la
-extension `health_check`, que expone un endpoint en el puerto 13133 y hay que activarla en
-`otel-collector-config.yaml`:
+**El unico pendiente real: `otel-collector`, y la razon NO es la que este documento decia.**
+
+Durante dias aqui figuro que "la solucion existe pero no esta en mi zona: hay que activar la
+extension `health_check` en `otel-collector-config.yaml` (puerto 13133)". **Eso era incorrecto para
+compose**, y el error es sutil: mezcla dos mecanismos que se ejecutan en lugares distintos.
+
+| | Quien ejecuta la verificacion | Necesita un binario dentro del contenedor |
+|---|---|---|
+| Probe `httpGet` de Kubernetes | el **kubelet**, desde fuera del contenedor | **No** |
+| `healthcheck` de Docker Compose | el propio contenedor | **Si** |
+
+Activar `health_check` abre un puerto HTTP. En Kubernetes eso alcanza, porque el kubelet hace la
+peticion desde afuera. En compose no alcanza: Docker corre el comando *adentro*, y hay que tener con
+que llamar a ese puerto.
+
+**Comprobado el 20/07, en este orden y no al reves:**
+
+```bash
+docker exec otel-collector /bin/sh -c "echo hola"   # -> stat /bin/sh: no such file or directory
+docker exec otel-collector ls /                     # -> "ls": executable file not found in $PATH
+docker exec otel-collector /otelcol-contrib --help  # -> completion | components | help | validate
+```
+
+El tercer comando es el que importa, y es la leccion de `toxiproxy` aplicada: antes de decir "no se
+puede", buscar si la imagen trae su propio cliente. Aca lo trae, pero sus cuatro subcomandos son
+**offline**: `validate` revisa el archivo de configuracion sin arrancar nada y `components` lista lo
+compilado. Ninguno consulta a un collector en ejecucion.
+
+**Conclusion, ahora si respaldada:** en Docker Compose este servicio no puede tener healthcheck sin
+cambiar la imagen base (por ejemplo, una imagen propia que agregue un binario estatico). No es un
+pendiente del Equipo 4: activar la extension no resuelve compose. Lo que si corresponde pedirles es
+activarla **de cara al port a Kubernetes**, donde una probe `httpGet` al 13133 funciona sin nada
+adentro del contenedor:
 
 ```yaml
 extensions:
@@ -153,10 +251,11 @@ service:
   extensions: [health_check]
 ```
 
-Ese archivo define el pipeline de observabilidad del Equipo 4. Modificarlo sin acordar con ellos
-seria cambiar como funciona su servicio. Aqui el "es de otro equipo" si corresponde -- a diferencia
-de `toxiproxy`, donde me escude en eso indebidamente: el healthcheck es politica de despliegue, o
-sea mi zona, aunque la herramienta la use el Equipo 1 para inyectar fallos.
+**Por que vale la pena registrar este error.** Es el tercero del mismo tipo -- despues de la
+afirmacion sin verificar sobre los 4 distroless y del "no se puede" sobre `toxiproxy`. Los tres
+comparten la forma: **una limitacion real generalizada mas alla de lo que los datos permitian.**
+Aqui era cierto que falta la extension; lo falso era que activarla resolviera el healthcheck de
+compose. Una recomendacion correcta para un entorno, presentada como valida para los dos.
 
 **Metodo, en orden, antes de declarar que algo "no se puede":**
 
@@ -262,24 +361,25 @@ python -c "import yaml;d=yaml.safe_load(open('docker-compose.yml'));print([n for
 
 Actualizado 19/07 tras la auditoria cruzada. Lo que estaba abierto el 18/07 y ya se cerro:
 imagenes propias por tag de commit, tempo/otel fijados por digest, esquema de BD versionado en
-`docker/init/`, healthchecks en 19 de 20 servicios, HPA + PDB, securityContext, USER no-root y
+`docker/init/`, healthchecks en 21 de 22 servicios, HPA + PDB, securityContext, USER no-root y
 HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 
 | # | Pendiente | Atributo en riesgo | Duenio |
 |---|---|---|---|
-| 1 | **Paridad compose ↔ K8s**: compose tiene 20 servicios, K8s cubre 11. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
+| 1 | **Paridad compose ↔ K8s**: compose tiene 22 servicios, K8s cubre 11. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`, `alertmanager`, `mailpit`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
 | 2 | **`/health` propio en los microservicios**, separado de `/metrics`. Hoy las probes apuntan a `/metrics`, y desde que el Equipo 4 agrego Gauges con `collect()` que consultan la BD, un problema en Postgres hace que Kubernetes reinicie los pods de aplicacion: un fallo de la capa de datos se propaga a la de computo | Disponibilidad | Equipo 5 + Equipo 4 |
-| 3 | **Healthcheck en `otel-collector`** (unico pendiente: `toxiproxy`, `tempo` y `promtail` ya lo tienen, ver seccion 3). Hace falta habilitar la extension `health_check` en `otel-collector-config.yaml` (puerto 13133) y despues agregar el `CMD` aca | Disponibilidad | Equipo 4 |
+| 3 | **Healthcheck en `otel-collector`** (unico pendiente: `toxiproxy`, `tempo` y `promtail` ya lo tienen). **Comprobado: en compose no se puede sin cambiar la imagen base** -- sin shell, y los 4 subcomandos de `/otelcol-contrib` son offline. Activar la extension `health_check` (puerto 13133) NO resuelve compose, solo habilita una probe `httpGet` cuando se porte a K8s, donde la ejecuta el kubelet desde afuera. Ver seccion 3 | Disponibilidad | Equipo 5 (imagen) + Equipo 4 (extension) |
 | 4 | **ConfigMap** para la configuracion no secreta, hoy duplicada inline en cada Deployment | Reproducibilidad | Equipo 5 |
 | 5 | **NetworkPolicy**: cualquier pod alcanza cualquier base | Seguridad | Equipo 5 + Equipo 3 |
 | 6 | **StorageClass explicita** en los `volumeClaimTemplates` (hoy dependen de la default del cluster) | Portabilidad | Equipo 5 |
 | 7 | **Topologia de RabbitMQ declarativa** (`definitions.json`). Hoy exchanges, colas y DLQ nacen de los `assertExchange`/`assertQueue` del codigo: la topologia depende de que servicio arranque primero y con que version | Confiabilidad | Equipo 2 |
 | 8 | ~~**Instrumentacion OTel en los microservicios**~~ **CERRADO 19/07** por el merge `f48911e` del Equipo 4: los 5 servicios traen el SDK y arrancan con `node -r ./src/config/tracing.js`. Verificado: `grep -h opentelemetry ms-*/package.json` devuelve 6 paquetes | Observabilidad | Equipo 4 |
-| 9 | **Provisioning de Grafana y Alertmanager**. Las reglas de `alert_rules.yml` se evaluan pero no hay destinatario configurado: una alerta que nadie recibe da sensacion de cobertura sin darla | Observabilidad | Equipo 4 |
+| 9 | ~~**Provisioning de Grafana y Alertmanager**~~ **CERRADO 20/07** por el merge `b4d0a8a` del Equipo 4: Alertmanager + Mailpit como SMTP local, dashboard provisionado, y el bloque `alerting` en `prometheus.yml` que faltaba para que las reglas evaluadas le llegaran a alguien | Observabilidad | Equipo 4 |
 | 10 | **Separar los workers del proceso HTTP en ms-tutorias**. Cada replica agrega otra copia de los tres pollers compitiendo por las mismas filas; por eso su HPA tiene `maxReplicas: 2` mientras el resto tiene 4 | Escalabilidad | Equipo 1 + Equipo 5 |
-| 11 | **Test de integracion que ejercite el flujo, no solo el arranque.** Limite comprobado de nuestro propio CI: el job `arranque-real` no habria detectado la BD faltante de `ms-notificaciones` ni el `JWT_SECRET` faltante, porque en los dos casos el proceso levanta y responde `/metrics`; el fallo aparece recien en la primera peticion real | Verificabilidad | Equipo 5 |
+| 11 | ~~**Test de integracion que ejercite el flujo, no solo el arranque**~~ **CERRADO 20/07**: `scripts/integracion-flujo-completo.sh`, ejecutado por el job `arranque-real`. Verifica dos EFECTOS que solo existen si la cadena completa funciono -- la fila en `logs_notificacion` (habria atrapado el hallazgo #10) y que el endpoint protegido acepte el token (habria atrapado el #11) | Verificabilidad | Equipo 5 |
 | 12 | **Variables OTel ausentes en los 5 Deployments de K8s.** Ningun manifiesto define `OTEL_SERVICE_NAME` ni `OTEL_EXPORTER_OTLP_ENDPOINT`. `tracing.js` cae a su default `http://otel-collector:4317`, que en el cluster no resuelve (el collector solo existe en compose): el exportador reintenta en silencio y no hay trazas. No rompe el servicio, y por eso pasa desapercibido. Es la cara concreta de la deuda #1 | Observabilidad | Equipo 5 + Equipo 4 |
 | 13 | **`enviarEmail` en `ms-tutorias/src/infrastructure/clients/notificaciones.client.js` es codigo muerto y ademas incorrecto.** No lo invoca nadie (la Saga notifica por RabbitMQ), pero hace `axios.post(url, payload)` **sin cabecera `Authorization`**. Si alguien lo conectara, el `jwt.middleware` que el Equipo 2 monto en `POST /:canal` lo cortaria con 401 en el primer `if (!authHeader)`. O se borra el cliente, o se le propaga el token | Mantenibilidad | Equipo 1 + Equipo 2 |
+| 14 | **`materia` no se valida contra nada y no existe un catalogo de materias en el modelo.** Comprobado en ejecucion: se puede solicitar "Fisica Cuantica" al tutor `t09876`, cuya especialidad sembrada es "Calculo Multivariable", y la Saga responde `CONFIRMADA`. La causa de fondo es el modelo: `especialidad` es un `VARCHAR(255)` libre dentro de `tutores`, sin tabla de materias ni relacion tutor-materia, y un tutor solo puede tener una. Por eso tampoco se puede ofrecer un `<select>` en el cliente: no hay catalogo de donde poblarlo, y `ms-usuarios` solo expone `GET /tutores/:id` (busqueda por ID, no coleccion). **Recomendado:** validar `materia` contra la especialidad del tutor en `ejecutarSagaSolicitudTutoria`, despues de resolver al tutor y **antes** de crear la fila PENDIENTE -- es el ultimo punto sin efectos colaterales, asi el rechazo es un `throw` y no un rollback distribuido. Eso es una curita; la solucion real es un catalogo con relacion N:M | Modelo de dominio | Equipo 2 + Equipo 1 |
 
 ---
 

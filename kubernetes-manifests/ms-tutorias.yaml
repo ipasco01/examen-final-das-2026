@@ -114,8 +114,10 @@ spec:
               value: "http://ms-usuarios-service:3001/usuarios"
             - name: MS_AGENDA_URL
               value: "http://ms-agenda-service:3002/agenda"
-            - name: MS_NOTIFICACIONES_URL
-              value: "http://ms-notificaciones-service:3003/notificaciones"
+            # MS_NOTIFICACIONES_URL eliminada el 20/07: ningun codigo la lee. ms-tutorias no le
+            # habla a ms-notificaciones por HTTP sino por RabbitMQ (outbox). Mantenerla sugeria una
+            # dependencia directa entre los dos servicios que no existe, y eso se lee mal en un
+            # manifiesto: alguien podria creer que hay una llamada sincrona que hay que proteger.
             # --- Equipo 5: BD y broker sincronizados con el compose. Los Services
             # db-tutorias-service y rabbitmq-service se crean en el issue 3; los valores
             # sensibles vienen del Secret app-runtime-secrets (no versionado). ---

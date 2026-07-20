@@ -35,13 +35,42 @@ jobs:
           cp .env.example .env
           docker compose config > /dev/null
 
-      - name: Ninguna imagen usa :latest
+      - name: Ninguna imagen usa :latest ni queda sin fijar
         # Una tag flotante hace que dos personas con el mismo commit corran binarios distintos.
+        #
+        # CORRECCION DEL 20/07 -- este chequeo tenia un agujero y paso en verde durante dias.
+        # La version anterior era `docker compose config | grep "image:.*:latest"`. El problema:
+        # un servicio que solo declara `build:` y NO `image:` no produce ninguna linea `image:`
+        # en la salida de `docker compose config` (verificado en la maquina de desarrollo). Docker
+        # igual le genera un nombre al construir -- "<proyecto>-<servicio>:latest" -- asi que el
+        # servicio corria con tag flotante mientras el lint no encontraba nada que reportar.
+        #
+        # Asi estaban client-sim y tracking-dashboard. Se descubrio leyendo la salida de un
+        # `docker compose build` ("naming to ...-client-sim:latest"), no por este chequeo.
+        #
+        # La leccion: un grep solo puede fallar sobre lo que esta escrito. El caso peligroso era
+        # justamente la AUSENCIA de una clave, que ningun patron de texto puede detectar. Por eso
+        # ahora se parsea el YAML, igual que el chequeo de `restart` de abajo -- que nunca tuvo
+        # este problema precisamente porque pregunta por la ausencia, no por el contenido.
         run: |
-          if docker compose config | grep -E "image:.*:latest"; then
-            echo "::error::Hay imagenes con :latest. Fijar por version o por digest."
-            exit 1
-          fi
+          python3 - <<'EOF'
+          import yaml, sys
+          servicios = yaml.safe_load(open('docker-compose.yml'))['services']
+          errores = []
+          for nombre, cfg in servicios.items():
+              imagen = cfg.get('image')
+              if imagen is None:
+                  errores.append(f"{nombre}: no declara 'image' -- Docker le asignara ':latest' al construir")
+              elif str(imagen).endswith(':latest'):
+                  errores.append(f"{nombre}: usa ':latest' explicitamente")
+              elif ':' not in str(imagen).rsplit('/', 1)[-1]:
+                  errores.append(f"{nombre}: la imagen '{imagen}' no tiene tag (Docker asume ':latest')")
+          if errores:
+              for e in errores:
+                  print(f"::error::{e}")
+              sys.exit(1)
+          print(f"OK: las {len(servicios)} imagenes estan fijadas por version o digest")
+          EOF
 
       - name: Todo servicio declara restart
         # Sin politica de reinicio, un proceso que muere deja el contenedor caido en silencio.
@@ -54,6 +83,40 @@ jobs:
               print(f"::error::Servicios sin 'restart': {', '.join(faltan)}")
               sys.exit(1)
           print(f"OK: {len(servicios)} servicios, todos con restart")
+          EOF
+
+      - name: Todo servicio declara healthcheck
+        # AGREGADO EL 20/07, y con motivo concreto: el merge del Equipo 4 incorporo `alertmanager`
+        # y `mailpit` SIN healthcheck, y ningun job dijo nada. D1 es el issue fundacional de esta
+        # zona -- "un proceso vivo pero sin responder figura como Up y compose lo da por bueno" --
+        # y era justamente la unica regla de la politica que el pipeline no verificaba.
+        #
+        # Es el mismo hueco que tenia el chequeo de :latest: un control que parece cubrir la
+        # politica y deja pasar lo que mas importa. La diferencia es que este se detecto mirando
+        # trabajo entrante, antes de que causara dañio.
+        #
+        # EXCEPCION UNICA Y COMPROBADA: otel-collector. La imagen no tiene shell y sus 4
+        # subcomandos (`validate`, `components`, `help`, `completion`) son offline: ninguno
+        # consulta al collector corriendo. Verificado con tres `docker exec`, documentado en la
+        # seccion 3 de docs/deployment-release-checklist.md. La lista es explicita a proposito:
+        # agregar un servicio aca obliga a justificarlo por escrito, que es el punto.
+        run: |
+          python3 - <<'EOF'
+          import yaml, sys
+          SIN_HEALTHCHECK_JUSTIFICADO = {
+              'otel-collector': 'imagen sin shell; los subcomandos de /otelcol-contrib son offline',
+          }
+          servicios = yaml.safe_load(open('docker-compose.yml'))['services']
+          faltan = [n for n, s in servicios.items()
+                    if 'healthcheck' not in s and n not in SIN_HEALTHCHECK_JUSTIFICADO]
+          if faltan:
+              for n in faltan:
+                  print(f"::error::{n}: sin healthcheck. Un contenedor 'Up' no es un servicio sano. "
+                        f"Si de verdad no se puede, agregalo a SIN_HEALTHCHECK_JUSTIFICADO con el motivo.")
+              sys.exit(1)
+          exentos = len(SIN_HEALTHCHECK_JUSTIFICADO)
+          print(f"OK: {len(servicios) - exentos} de {len(servicios)} con healthcheck "
+                f"({exentos} exento documentado)")
           EOF
 
       - name: Ningun secreto real versionado
@@ -143,6 +206,27 @@ jobs:
             fi
           done
           exit $fallos
+
+      - name: El flujo de negocio funciona, no solo el arranque
+        # DEUDA #11, CERRADA EL 20/07.
+        #
+        # Todo lo de arriba pregunta "¿el proceso responde?". Esto pregunta "¿el sistema hace lo
+        # que dice hacer?". La diferencia no es teorica: los hallazgos #10 y #11 pasaron los
+        # chequeos de arranque con verde y estaban rotos.
+        #
+        #   #10 — ms-notificaciones necesitaba una base que no existia. Arranca sano; falla en la
+        #         primera notificacion que intenta deduplicar.
+        #   #11 — ms-notificaciones sin JWT_SECRET. Arranca sano; rechaza todo token valido.
+        #
+        # El script ejercita login -> catalogo -> solicitar -> CONFIRMADA, y despues verifica dos
+        # EFECTOS que solo existen si la cadena completa funciono: la fila en logs_notificacion
+        # (atrapa #10) y que el endpoint protegido acepte el token (atrapa #11).
+        #
+        # "Un contenedor Up no es un servicio sano" fue la leccion de D1. Esto es el paso
+        # siguiente: un servicio sano no es todavia un sistema que funciona.
+        run: |
+          chmod +x scripts/integracion-flujo-completo.sh
+          ./scripts/integracion-flujo-completo.sh
 
       - name: Diagnostico si algo fallo
         if: failure()

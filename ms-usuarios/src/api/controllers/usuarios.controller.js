@@ -30,7 +30,21 @@ const obtenerTutor = async (req, res, next) => {
     }
 };
 
+const listarTutores = async (req, res, next) => {
+    const cid = req.correlationId;
+    try {
+        track(cid, 'Listando tutores disponibles');
+        const tutores = await usuariosService.listarTutores();
+        track(cid, `${tutores.length} tutores encontrados.`);
+        res.status(200).json(tutores);
+    } catch (error) {
+        track(cid, `Error listando tutores: ${error.message}`, 'ERROR');
+        next(error);
+    }
+};
+
 module.exports = {
     obtenerEstudiante,
-    obtenerTutor
+    obtenerTutor,
+    listarTutores
 };

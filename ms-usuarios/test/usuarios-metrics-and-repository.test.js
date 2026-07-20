@@ -96,3 +96,54 @@ test('repository preserves non-schema database errors', async () => {
         (error) => error === dbError
     );
 });
+
+// GET /usuarios/tutores -- listado para poblar el desplegable del simulador.
+
+test('findAllTutores selecciona columnas explicitas, no SELECT *', async () => {
+    // Un listado publico no debe arrastrar columnas nuevas que alguien agregue a `tutores` mas
+    // adelante. Se afirma sobre el SQL emitido porque es la unica forma de verificar la intencion:
+    // con datos de prueba controlados, un SELECT * pasaria igual.
+    let sqlEmitido = null;
+    queryImpl = async (text) => { sqlEmitido = text; return { rows: [] }; };
+
+    await usuariosRepository.findAllTutores();
+
+    assert.doesNotMatch(sqlEmitido, /SELECT\s+\*/i, 'no debe usar SELECT *');
+    assert.match(sqlEmitido, /id.*nombreCompleto.*especialidad/is);
+    assert.match(sqlEmitido, /ORDER BY/i, 'el orden estable evita que las opciones salten entre recargas');
+});
+
+test('findAllTutores devuelve [] cuando no hay tutores, no un error', async () => {
+    // Lista vacia es un estado legitimo, no una falla: si devolviera 404 el cliente tendria que
+    // tratar "todavia no hay tutores cargados" como si el servicio estuviera roto.
+    queryImpl = async () => ({ rows: [] });
+
+    const tutores = await usuariosRepository.findAllTutores();
+
+    assert.deepEqual(tutores, []);
+});
+
+test('findAllTutores mapea el error de tabla ausente al mismo contrato que el resto', async () => {
+    const dbError = new Error('relation "tutores" does not exist');
+    dbError.code = '42P01';
+    dbError.stack = dbError.message;
+    queryImpl = async () => { throw dbError; };
+
+    await assert.rejects(
+        () => usuariosRepository.findAllTutores(),
+        (error) => {
+            assert.equal(error.statusCode, 500);
+            assert.match(error.message, /falta la tabla tutores/i);
+            return true;
+        }
+    );
+});
+
+test('GET /usuarios/tutores exige token, igual que el resto de las rutas', async () => {
+    // El catalogo no es informacion publica: va detras del mismo jwt.middleware que protege
+    // /estudiantes/:id y /tutores/:id. Sin este test, agregar la ruta sin el middleware pasaria
+    // desapercibido -- es exactamente el hueco que tenia ms-notificaciones antes del 19/07.
+    const response = await fetch(`${baseUrl}/usuarios/tutores`);
+
+    assert.equal(response.status, 401);
+});

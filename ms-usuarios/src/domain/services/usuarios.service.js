@@ -23,7 +23,13 @@ const getTutor = async (id) => {
     return tutor;
 };
 
+// A diferencia de getTutor, una lista vacia NO es un error: significa que todavia no hay tutores
+// cargados, que es un estado legitimo del sistema. Devolver 404 aca obligaria al cliente a tratar
+// "no hay nada" como una falla. Se devuelve [] y el llamador decide que mostrar.
+const listarTutores = async () => usuariosRepository.findAllTutores();
+
 module.exports = {
     getEstudiante,
-    getTutor
+    getTutor,
+    listarTutores
 };

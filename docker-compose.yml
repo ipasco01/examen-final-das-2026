@@ -298,12 +298,23 @@ services:
       retries: 3
       start_period: 30s
     build: ./client-mobile-sim
+    # Equipo 5 (20/07): faltaba la clave `image`. Sin ella Docker inventa el nombre a partir del
+    # proyecto y le pone `:latest` -- exactamente lo que la politica prohibe. Se detecto leyendo
+    # la salida de un build ("naming to ...-client-sim:latest"), no por el lint del CI: ver el
+    # comentario del chequeo en .github/workflows/deployment-checks.yml.
+    image: ghcr.io/elcbas/client-sim:${IMAGE_TAG:-0ab70dc}
     container_name: client_sim_web
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
       - PORT=8080
+      # Tercera URL del simulador, la unica que NO pasa por el orquestador: alimenta el desplegable
+      # de tutor+materia contra GET /usuarios/tutores. Hasta ahora el cliente solo hablaba con
+      # ms-auth (token) y ms-tutorias (todo lo demas), asi que esto agrega una dependencia nueva.
+      # Es aceptable porque es una lectura de catalogo y no un paso de la Saga: si ms-usuarios no
+      # responde, el selector queda vacio pero solicitar/cancelar/reprogramar siguen funcionando.
+      - USUARIOS_SERVICE_URL=http://ms-usuarios:3001/usuarios
       # URLs que apuntan a los nombres de servicio de Docker Compose
       - API_BASE_URL=http://ms-tutorias:3000
       - AUTH_SERVICE_URL=http://ms-auth:4000/auth
@@ -325,6 +336,8 @@ services:
       retries: 3
       start_period: 30s
     build: ./tracking-dashboard
+    # Mismo caso que client-sim: sin `image` explicita, Docker genera un `:latest`.
+    image: ghcr.io/elcbas/tracking-dashboard:${IMAGE_TAG:-0ab70dc}
     container_name: tracking_dashboard
     restart: unless-stopped
     ports:
@@ -524,7 +537,7 @@ services:
       ms-tutorias:
         condition: service_started # Esperar a que al menos uno arranque
 
-   # --- Alerting (Alertmanager + Mailpit como SMTP falso para demo local) ---
+  # --- Alerting (Alertmanager + Mailpit como SMTP falso para demo local) ---
   alertmanager:
     image: prom/alertmanager:v0.27.0
     container_name: alertmanager
@@ -535,13 +548,39 @@ services:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
     ports:
       - "9093:9093" # UI de Alertmanager: ver alertas agrupadas, silenciarlas, etc.
+    # Equipo 5 (20/07): healthcheck. Entro sin uno en el merge del Equipo 4 -- con `restart` e
+    # imagen fijada, o sea que ya incorporaron las dos reglas anteriores, pero D1 seguia sin
+    # verificarse. Ver el chequeo nuevo en .github/workflows/deployment-checks.yml, que ahora
+    # falla si un servicio entra sin healthcheck: la regla dejaba de depender de que alguien la
+    # recordara en la revision.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9093/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
-      - mailpit
+      # Equipo 5: era `- mailpit` (forma corta), que solo espera a que el contenedor EXISTA.
+      # Alertmanager arrancaba antes de que el SMTP de mailpit estuviera escuchando, y una alerta
+      # disparada en esa ventana se perdia sin ruido -- el mismo problema que el Equipo 4 acaba de
+      # resolver un nivel mas arriba al conectar Prometheus con Alertmanager.
+      mailpit:
+        condition: service_healthy
 
   mailpit:
     image: axllent/mailpit:v1.20
     container_name: mailpit
     restart: unless-stopped
+    # Equipo 5 (20/07): healthcheck sobre /readyz. No es cosmetico -- es el que hace posible el
+    # `condition: service_healthy` de alertmanager: sin un healthcheck aca, esa condicion no se
+    # puede expresar. Por eso el orden importa: primero se declara la salud, despues se puede
+    # depender de ella.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8025/readyz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     ports:
       - "8025:8025" # UI web: acá se ven los "correos" que llegan
       - "1025:1025" # Puerto SMTP falso al que le apunta Alertmanager

@@ -68,6 +68,36 @@ const ejecutarSagaSolicitudTutoria = async (datosSolicitud, correlationId, optio
         if (!tutor) throw Object.assign(new Error('Tutor no encontrado'), { statusCode: 404 });
         trackCid('Usuarios validados exitosamente.');
 
+        // --- 1b. Validar que el tutor dicte la materia solicitada ---
+        //
+        // Hasta ahora `materia` era texto libre: viajaba del formulario al INSERT y al asunto del
+        // correo sin que nadie comprobara nada. Se podia pedir "Fisica Cuantica" a una tutora cuya
+        // especialidad es "Calculo Multivariable" y la Saga respondia CONFIRMADA.
+        //
+        // POR QUE VA EXACTAMENTE AQUI: es el ultimo punto del flujo sin efectos colaterales. El
+        // tutor ya se resolvio en el paso 1 (no cuesta una llamada extra), pero todavia no se creo
+        // la fila PENDIENTE ni se bloqueo la agenda. Rechazar aca es un simple `throw`; una linea
+        // mas abajo ya habria que compensar. Validar antes del primer paso irreversible es lo que
+        // convierte un error en un rechazo barato en vez de un rollback distribuido.
+        //
+        // LIMITE CONOCIDO: compara contra el VARCHAR libre `especialidad`, normalizando mayusculas
+        // y acentos. Es una curita sobre el problema de fondo -- no existe un catalogo de materias
+        // ni una relacion tutor-materia en el modelo, y un tutor solo puede tener una especialidad.
+        // Ver deuda #14 en docs/deployment-release-checklist.md.
+        const normalizar = (texto) => String(texto || '')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // quita tildes: "Fisica" == "Física"
+            .trim().toLowerCase().replace(/\s+/g, ' ');
+
+        const especialidadTutor = tutor.especialidad;
+        if (especialidadTutor && normalizar(materia) !== normalizar(especialidadTutor)) {
+            trackCid(`Materia "${materia}" no corresponde a la especialidad del tutor ("${especialidadTutor}").`, 'ERROR');
+            throw Object.assign(
+                new Error(`El tutor no dicta "${materia}". Su especialidad es "${especialidadTutor}".`),
+                { statusCode: 400 }
+            );
+        }
+        trackCid(`Materia validada contra la especialidad del tutor ("${especialidadTutor}").`);
+
         // --- 2. Verificar agenda ---
         trackCid('Verificando disponibilidad de agenda...');
         const disponible = await agendaClient.verificarDisponibilidad(idTutor, fechaSolicitada, correlationId, authHeader);
