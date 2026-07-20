@@ -1,3 +1,24 @@
+# Equipo 5 (20/07) agrego el bloque `extensions` de abajo. Es aditivo: no toca receivers,
+# processors ni exporters, o sea que el pipeline de trazas del Equipo 4 queda igual.
+
+extensions:
+  # Expone un endpoint HTTP que responde 200 si el collector esta operativo.
+  #
+  # PARA QUE SIRVE Y PARA QUE NO -- el matiz importa y costo tres `docker exec` averiguarlo:
+  #
+  #   En KUBERNETES si sirve. Una probe `httpGet` la ejecuta el kubelet DESDE FUERA del
+  #   contenedor, asi que no hace falta ningun binario adentro. Con esto la probe de
+  #   kubernetes-manifests/otel-collector.yaml pasa de `tcpSocket` (que solo confirma que el
+  #   puerto escucha) a `httpGet` al 13133, que confirma que el collector se declara sano.
+  #
+  #   En DOCKER COMPOSE no alcanza. El healthcheck de Docker corre DENTRO del contenedor, y esta
+  #   imagen no tiene shell ni cliente HTTP: los cuatro subcomandos de /otelcol-contrib
+  #   (validate, components, help, completion) son offline y ninguno consulta a un collector
+  #   corriendo. Por eso `otel-collector` sigue siendo el unico servicio de compose sin
+  #   healthcheck, y la unica excepcion documentada en el CI.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 receivers:
   otlp:
     protocols:
@@ -29,6 +50,10 @@ exporters:
     verbosity: basic
 
 service:
+  # Sin esta linea la extension queda definida pero NO se carga: declararla arriba no alcanza.
+  # Es el mismo patron de todo este proyecto -- lo escrito no es lo que corre hasta que algo lo
+  # activa. Verificable:  curl http://localhost:13133  ->  debe responder 200.
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]

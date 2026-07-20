@@ -13,12 +13,11 @@
 # perdida aceptable para telemetria -- distinto de una base, donde perder un batch es perder datos
 # del negocio.
 #
-# SOBRE LA PROBE: `tcpSocket`, no `httpGet`.
-# La extension `health_check` (puerto 13133) esta pedida al Equipo 4 pero todavia no activada en su
-# config. Sin ella no hay endpoint HTTP que consultar, asi que se verifica que el puerto OTLP este
-# aceptando conexiones. Es mas debil --confirma que escucha, no que el pipeline hacia Tempo
-# funcione-- y por eso queda anotado: cuando activen la extension, esto pasa a
-# `httpGet: /  port: 13133`.
+# SOBRE LA PROBE: `httpGet` al 13133 (actualizado el 20/07).
+# Nacio como `tcpSocket: 4317` porque la extension `health_check` no estaba activada. Ya lo esta
+# --se agrego a otel-collector-config.yaml el mismo dia-- y `httpGet` es estrictamente mejor: el
+# socket solo confirmaba que el puerto acepta conexiones, esto confirma que el collector se declara
+# operativo. Verificado:  curl http://localhost:13133 -> {"status":"Server available",...}
 #
 # Lo importante del caso: en compose este servicio NO PUEDE tener healthcheck (imagen sin shell,
 # subcomandos de /otelcol-contrib todos offline -- comprobado con tres `docker exec`). En K8s si,
@@ -32,6 +31,27 @@ data:
   # Contenido IDENTICO a ./otel-collector-config.yaml de la raiz. Archivo del Equipo 4: define su
   # pipeline de observabilidad y no se toca desde aca, solo se transporta.
   otel-collector-config.yaml: |
+    # Equipo 5 (20/07) agrego el bloque `extensions` de abajo. Es aditivo: no toca receivers,
+    # processors ni exporters, o sea que el pipeline de trazas del Equipo 4 queda igual.
+
+    extensions:
+      # Expone un endpoint HTTP que responde 200 si el collector esta operativo.
+      #
+      # PARA QUE SIRVE Y PARA QUE NO -- el matiz importa y costo tres `docker exec` averiguarlo:
+      #
+      #   En KUBERNETES si sirve. Una probe `httpGet` la ejecuta el kubelet DESDE FUERA del
+      #   contenedor, asi que no hace falta ningun binario adentro. Con esto la probe de
+      #   kubernetes-manifests/otel-collector.yaml pasa de `tcpSocket` (que solo confirma que el
+      #   puerto escucha) a `httpGet` al 13133, que confirma que el collector se declara sano.
+      #
+      #   En DOCKER COMPOSE no alcanza. El healthcheck de Docker corre DENTRO del contenedor, y esta
+      #   imagen no tiene shell ni cliente HTTP: los cuatro subcomandos de /otelcol-contrib
+      #   (validate, components, help, completion) son offline y ninguno consulta a un collector
+      #   corriendo. Por eso `otel-collector` sigue siendo el unico servicio de compose sin
+      #   healthcheck, y la unica excepcion documentada en el CI.
+      health_check:
+        endpoint: 0.0.0.0:13133
+
     receivers:
       otlp:
         protocols:
@@ -63,6 +83,10 @@ data:
         verbosity: basic
 
     service:
+      # Sin esta linea la extension queda definida pero NO se carga: declararla arriba no alcanza.
+      # Es el mismo patron de todo este proyecto -- lo escrito no es lo que corre hasta que algo lo
+      # activa. Verificable:  curl http://localhost:13133  ->  debe responder 200.
+      extensions: [health_check]
       pipelines:
         traces:
           receivers: [otlp]
@@ -88,6 +112,10 @@ spec:
       protocol: TCP
       port: 4318
       targetPort: 4318
+    - name: health
+      protocol: TCP
+      port: 13133
+      targetPort: 13133
   type: ClusterIP
 ---
 apiVersion: apps/v1
@@ -117,16 +145,25 @@ spec:
               containerPort: 4317
             - name: otlp-http
               containerPort: 4318
+            - name: health
+              containerPort: 13133
+          # Actualizado el 20/07: era `tcpSocket: 4317` porque la extension `health_check` no
+          # estaba activada. Ahora si lo esta, y `httpGet` al 13133 es estrictamente mejor: el
+          # socket solo confirmaba que el puerto acepta conexiones; esto confirma que el collector
+          # se declara operativo. La ejecuta el kubelet desde fuera del contenedor, por eso funciona
+          # aunque la imagen no tenga shell -- lo que en compose sigue siendo imposible.
           readinessProbe:
-            tcpSocket:
-              port: 4317
+            httpGet:
+              path: /
+              port: 13133
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
-            tcpSocket:
-              port: 4317
+            httpGet:
+              path: /
+              port: 13133
             initialDelaySeconds: 20
             periodSeconds: 15
             timeoutSeconds: 5

@@ -406,9 +406,25 @@ Con otro nombre habria que forkear ese archivo, y **dos copias de la misma confi
 fuente de drift que este documento entero viene combatiendo**. Se adapta el nombre del Service, que
 es mio, antes que duplicar un archivo ajeno.
 
-**La probe del collector es `tcpSocket`, no `httpGet`**, porque la extension `health_check` sigue
-pedida al Equipo 4. Verifica que el puerto acepte conexiones, no que el pipeline hacia Tempo
-funcione. Cuando la activen, pasa a `httpGet` al 13133.
+**La probe del collector es `httpGet` al 13133** (nacio como `tcpSocket: 4317`). Se activo la
+extension `health_check` en `otel-collector-config.yaml` el mismo dia -- cambio aditivo, no toca
+receivers, processors ni exporters. Verificado:
+
+```bash
+curl http://localhost:13133
+# -> {"status":"Server available","upSince":"...","uptime":"192ms"}
+```
+
+**Ojo con el detalle que hace falta para que funcione:** declarar la extension en el bloque
+`extensions:` NO la carga. Hay que agregarla ademas a `service.extensions: [health_check]`. Sin esa
+segunda linea el bloque queda escrito y jamas se activa -- el mismo patron que este documento
+persigue hace tres dias, ahora dentro de un archivo de configuracion.
+
+**Y esto NO habilita un healthcheck en compose.** El puerto 13133 se expuso para poder verificarlo
+a mano desde el host, pero el healthcheck de Docker corre DENTRO del contenedor y la imagen sigue
+sin cliente HTTP. `otel-collector` continua siendo la unica excepcion documentada en el CI. La
+asimetria es el punto: **misma imagen, mismo servicio, y una plataforma puede verificarlo y la otra
+no**, porque el kubelet consulta desde afuera y Docker desde adentro.
 
 ### Hallazgo #16: el endurecimiento D4 rompia las 6 cosas con estado, un dia entero
 
