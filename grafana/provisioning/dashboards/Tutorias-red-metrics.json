@@ -1,117 +1,47 @@
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
+  "id": null,
+  "uid": "tutorias-red-metrics",
+  "title": "Tutorías App — Observabilidad (RED + Negocio + Logs)",
+  "tags": [
+    "tutorias",
+    "observabilidad",
+    "examen-final"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
   },
-  "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
-  "id": 1,
-  "links": [],
   "panels": [
     {
-      "collapsed": false,
+      "id": 100,
+      "title": "RED Metrics — Rate / Errors / Duration por servicio",
+      "type": "row",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 0
       },
-      "id": 100,
-      "panels": [],
-      "title": "RED Metrics — Rate / Errors / Duration por servicio",
-      "type": "row"
+      "collapsed": false,
+      "panels": []
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
+      "id": 1,
+      "title": "Rate — Requests por segundo (por servicio)",
+      "type": "timeseries",
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 0,
         "y": 1
       },
-      "id": 1,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
       },
       "targets": [
         {
@@ -124,87 +54,26 @@
           "refId": "A"
         }
       ],
-      "title": "Rate — Requests por segundo (por servicio)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "percent"
+          "unit": "reqps"
         },
         "overrides": []
-      },
+      }
+    },
+    {
+      "id": 2,
+      "title": "Errors — % de respuestas 5xx (por servicio)",
+      "type": "timeseries",
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 8,
         "y": 1
       },
-      "id": 2,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
       },
       "targets": [
         {
@@ -217,87 +86,26 @@
           "refId": "A"
         }
       ],
-      "title": "Errors — % de respuestas 5xx (por servicio)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "s"
+          "unit": "percent"
         },
         "overrides": []
-      },
+      }
+    },
+    {
+      "id": 3,
+      "title": "Duration — Latencia p95 (por servicio)",
+      "type": "timeseries",
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 16,
         "y": 1
       },
-      "id": 3,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
       },
       "targets": [
         {
@@ -310,47 +118,71 @@
           "refId": "A"
         }
       ],
-      "title": "Duration — Latencia p95 (por servicio)",
-      "type": "timeseries"
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
     },
     {
-      "collapsed": false,
+      "id": 101,
+      "title": "Estado de los servicios",
+      "type": "row",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 9
       },
-      "id": 101,
-      "panels": [],
-      "title": "Estado de los servicios",
-      "type": "row"
+      "collapsed": false,
+      "panels": []
     },
     {
+      "id": 4,
+      "title": "Servicios activos (up)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
       "datasource": {
         "type": "prometheus",
         "uid": "Prometheus"
       },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "expr": "up{service_name!=\"\"}",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
           "mappings": [
             {
+              "type": "value",
               "options": {
                 "0": {
-                  "color": "red",
-                  "text": "CAÍDO"
+                  "text": "CAÍDO",
+                  "color": "red"
                 }
-              },
-              "type": "value"
+              }
             },
             {
+              "type": "value",
               "options": {
                 "1": {
-                  "color": "green",
-                  "text": "OK"
+                  "text": "OK",
+                  "color": "green"
                 }
-              },
-              "type": "value"
+              }
             }
           ],
           "thresholds": {
@@ -369,247 +201,120 @@
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 4,
-        "w": 24,
-        "x": 0,
-        "y": 10
-      },
-      "id": 4,
       "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+          ]
         },
-        "showPercentChange": true,
-        "textMode": "value_and_name",
-        "wideLayout": true
-      },
-      "pluginVersion": "11.1.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "up{service_name!=\"\"}",
-          "legendFormat": "{{service_name}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Servicios activos (up)",
-      "type": "stat"
+        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "none"
+      }
     },
     {
-      "collapsed": false,
+      "id": 102,
+      "title": "Circuit Breakers (ms-tutorias → ms-agenda / ms-usuarios)",
+      "type": "row",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 14
       },
-      "id": 102,
-      "panels": [],
-      "title": "Métrica de negocio — Compensaciones",
-      "type": "row"
+      "collapsed": false,
+      "panels": []
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
+      "id": 5,
+      "title": "Estado del Circuit Breaker por servicio dependiente",
+      "type": "state-timeline",
       "gridPos": {
         "h": 7,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 15
       },
-      "id": 5,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "increase(compensacion_fallida_total[5m])",
-          "legendFormat": "{{etapa}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Compensaciones de agenda fallidas (últimos 5m, por etapa)",
-      "type": "timeseries"
-    },
-    {
       "datasource": {
         "type": "prometheus",
         "uid": "Prometheus"
       },
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 15
-      },
-      "id": 6,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "11.1.0",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "sum(compensacion_fallida_total)",
-          "legendFormat": "total",
+          "expr": "circuit_breaker_state",
+          "legendFormat": "{{target_service}}",
           "refId": "A"
         }
       ],
-      "title": "Compensaciones fallidas — total acumulado",
-      "type": "stat"
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "CERRADO",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0.5": {
+                  "text": "HALF-OPEN",
+                  "color": "yellow"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "ABIERTO",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "always",
+        "mergeValues": true
+      }
     },
     {
-      "collapsed": false,
+      "id": 103,
+      "title": "Logs por microservicio",
+      "type": "row",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 22
       },
-      "id": 103,
-      "panels": [],
-      "title": "Logs centralizados (Loki)",
-      "type": "row"
+      "collapsed": false,
+      "panels": []
     },
     {
-      "datasource": {
-        "type": "loki",
-        "uid": "Loki"
-      },
+      "id": 8,
+      "title": "Logs — ms-auth",
+      "type": "logs",
       "gridPos": {
-        "h": 9,
+        "h": 6,
         "w": 24,
         "x": 0,
         "y": 23
       },
-      "id": 7,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
       },
       "targets": [
         {
@@ -617,32 +322,140 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "{service=~\".+\"}",
+          "expr": "{service=\"ms-auth\"}",
           "refId": "A"
         }
       ],
-      "title": "Logs recientes de todos los servicios",
-      "type": "logs"
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Logs — ms-usuarios",
+      "type": "logs",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 29
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "{service=\"ms-usuarios\"}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 10,
+      "title": "Logs — ms-agenda",
+      "type": "logs",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "{service=\"ms-agenda\"}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 11,
+      "title": "Logs — ms-notificaciones",
+      "type": "logs",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "{service=\"ms-notificaciones\"}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Logs — ms-tutorias",
+      "type": "logs",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "{service=\"ms-tutorias\"}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
     }
-  ],
-  "refresh": "10s",
-  "schemaVersion": 39,
-  "tags": [
-    "tutorias",
-    "observabilidad",
-    "examen-final"
-  ],
-  "templating": {
-    "list": []
-  },
-  "time": {
-    "from": "now-30m",
-    "to": "now"
-  },
-  "timepicker": {},
-  "timezone": "browser",
-  "title": "Tutorías App — Observabilidad (RED + Negocio + Logs)",
-  "uid": "tutorias-red-metrics",
-  "version": 2,
-  "weekStart": ""
+  ]
 }
