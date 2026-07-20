@@ -1,0 +1,105 @@
+# kubernetes-manifests/loki.yaml
+#
+# Equipo 5 (Deployment) — deuda #1, primera parte: portar el plano de observabilidad a Kubernetes.
+#
+# ORDEN DELIBERADO. Loki va primero de los cuatro que faltan (Loki, Grafana, Prometheus, Promtail)
+# porque es el unico que NO cambia de forma al cambiar de plataforma: mismo binario, misma config
+# interna, mismo puerto. Es practicamente el manifiesto de Tempo con otro nombre. Prometheus y
+# Promtail se dejan para el final porque los dos necesitan consultar la API del cluster --y por
+# tanto un ServiceAccount con RBAC-- que es una decision de seguridad del Equipo 3, no de deployment.
+#
+# StatefulSet y no Deployment: Loki escribe chunks, indice (boltdb-shipper) y WAL en disco. Con un
+# volumen efimero se pierden todos los logs en cada reinicio del pod. Es el mismo criterio que las
+# bases y Tempo.
+#
+# EL SERVICE SE LLAMA `loki`, NO `loki-service`, por la misma razon que `tempo` y `otel-collector`:
+# el datasource de Grafana (archivo del Equipo 4) apunta a http://loki:3100. Si el Service tuviera
+# otro nombre habria que mantener dos versiones de esa config, una por entorno -- que es la fuente
+# de drift que toda esta zona viene combatiendo. Se adapta el nombre del Service, que es mio.
+#
+# NO SE MONTA CONFIGURACION. A diferencia de Tempo, Loki usa la config interna de su imagen
+# (/etc/loki/local-config.yaml) y en compose tampoco se le monta nada. La ruta de datos se verifico
+# antes de montar el volumen, no se dedujo:
+#   docker exec loki cat /etc/loki/local-config.yaml | grep path_prefix   ->   /loki
+# Habria apostado por /tmp/loki, que es el default de otras versiones. Montar en la ruta equivocada
+# habria dejado el manifiesto con aspecto de correcto y a Loki perdiendo los logs igual.
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki # NO 'loki-service': coincide con el datasource de Grafana y con el nombre en compose
+spec:
+  selector:
+    app: loki
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3100
+      targetPort: 3100
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki
+spec:
+  serviceName: loki
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      containers:
+        - name: loki
+          image: grafana/loki:2.9.4 # misma version fijada que en docker-compose.yml
+          args: ["-config.file=/etc/loki/local-config.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 3100
+          # `/ready` es el mismo endpoint que usa el healthcheck de compose, asi los dos entornos
+          # verifican lo mismo. La diferencia es quien pregunta: aca el kubelet desde afuera, en
+          # compose el propio contenedor con su wget.
+          #
+          # timeoutSeconds EXPLICITO: el default de Kubernetes es 1s (hallazgo #4). Loki tarda mas
+          # que eso en responder mientras compacta.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3100
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 3100
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: loki-data
+              mountPath: /loki
+  volumeClaimTemplates:
+    - metadata:
+        name: loki-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

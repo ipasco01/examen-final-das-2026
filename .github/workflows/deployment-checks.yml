@@ -164,7 +164,11 @@ jobs:
           errores = []
           for f in glob.glob('kubernetes-manifests/*.yaml'):
               for doc in yaml.safe_load_all(open(f)):
-                  if not doc or doc.get('kind') not in ('Deployment', 'StatefulSet'):
+                  # DaemonSet agregado el 20/07 junto con promtail.yaml. Sin el, este lint
+                  # habria ignorado por completo un workload nuevo -- el mismo agujero que dejo
+                  # pasar alertmanager y mailpit sin healthcheck. Al agregar un `kind`, hay que
+                  # agregarlo tambien aca.
+                  if not doc or doc.get('kind') not in ('Deployment', 'StatefulSet', 'DaemonSet'):
                       continue
                   nombre = doc['metadata']['name']
                   for c in doc['spec']['template']['spec']['containers']:
@@ -277,10 +281,32 @@ jobs:
             kubectl rollout status "deployment/${ms}-deployment" --timeout=180s
           done
 
-      - name: El pipeline de trazas esta arriba
+      - name: El plano de observabilidad esta arriba
+        # Agregado el 20/07 al portar la deuda #1. `rollout status` sobre un DaemonSet espera a
+        # que haya un pod Ready por nodo, no una replica fija.
         run: |
           kubectl rollout status deployment/otel-collector --timeout=120s
-          echo "OK: collector y Tempo Ready"
+          kubectl rollout status statefulset/loki --timeout=180s
+          kubectl rollout status statefulset/prometheus --timeout=180s
+          kubectl rollout status deployment/grafana --timeout=180s
+          kubectl rollout status daemonset/promtail --timeout=180s
+          echo "OK: collector, Tempo, Loki, Prometheus, Grafana y Promtail Ready"
+
+      - name: Prometheus descubrio los 5 microservicios
+        # ESTE es el chequeo que protege el trabajo de Isabel. El panel "Servicios activos (up)"
+        # filtra por up{service_name!=""}; si el relabeling de kubernetes_sd_configs deja de
+        # traducir la etiqueta del pod, el panel muestra "No data" aunque todo este sano y nadie
+        # se entera hasta abrir Grafana. Se verifica el EFECTO: 5 targets con service_name.
+        run: |
+          kubectl port-forward svc/prometheus 9090:9090 &
+          sleep 10
+          activos=$(curl -sf http://localhost:9090/api/v1/targets \
+            | python3 -c 'import sys,json; t=json.load(sys.stdin)["data"]["activeTargets"]; print(sum(1 for x in t if x["health"]=="up" and x["labels"].get("service_name")))')
+          echo "targets UP con service_name: $activos"
+          if [ "$activos" -ne 5 ]; then
+            echo "::error::Se esperaban 5 targets con service_name y hay $activos. El relabeling se rompio."
+            exit 1
+          fi
 
       - name: Diagnostico si algo fallo
         if: failure()

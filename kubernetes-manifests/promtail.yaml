@@ -1,0 +1,225 @@
+# kubernetes-manifests/promtail.yaml
+#
+# Equipo 5 (Deployment) — deuda #1, cuarta y ultima parte.
+#
+# ══════════════════════════════════════════════════════════════════════════════════════════
+#  ES EL UNICO SERVICIO QUE CAMBIA DE **FORMA**, NO SOLO DE MANIFIESTO
+# ══════════════════════════════════════════════════════════════════════════════════════════
+#
+# Los otros tres (Loki, Grafana, Prometheus) son el mismo binario haciendo lo mismo en otro
+# lado. Promtail no: en compose descubre contenedores por el socket de Docker y lee de
+# /var/lib/docker/containers. **En Kubernetes ninguna de las dos cosas existe.**
+#
+#   compose                              Kubernetes
+#   ─────────────────────────────────    ──────────────────────────────────────
+#   1 contenedor                         DaemonSet: 1 pod POR NODO
+#   docker_sd_configs (socket)           kubernetes_sd_configs (API)
+#   /var/lib/docker/containers           /var/log/pods (hostPath)
+#   pipeline `docker: {}`                pipeline `cri: {}`
+#   label com_docker_compose_service     label `app` del pod
+#
+# DaemonSet y no Deployment: los logs de un pod estan en el disco del NODO donde corre. Un
+# Deployment con 1 replica solo veria los logs de su propio nodo y perderia el resto en
+# silencio. Con DaemonSet, Kubernetes garantiza una copia por nodo.
+#
+# ── `cri: {}` EN VEZ DE `docker: {}` ──────────────────────────────────────────────────────
+# Docker envuelve cada linea en JSON: {"log":"...","stream":"stdout","time":"..."}.
+# containerd --el runtime de kind y de casi todo cluster moderno-- usa el formato CRI, que es
+# texto plano con prefijo. Dejar `docker: {}` no da error visible: Promtail arranca, la probe
+# pasa, y los logs llegan a Loki **sin parsear**, como una sola cadena inutil. Es la clase de
+# fallo que se ve solo mirando el resultado en Grafana, no el estado del pod.
+#
+# ── SOBRE runAsUser: 0 (root) ─────────────────────────────────────────────────────────────
+# Es la UNICA excepcion a `runAsNonRoot` en todo el proyecto, y no me gusta, pero es
+# inevitable: /var/log/pods pertenece a root en el nodo y Promtail tiene que leerlo. Se
+# compensa con lo que si se puede: readOnly en los dos montajes, `drop: ["ALL"]`, y RBAC
+# limitado a leer pods. Queda anotado como deuda para revisar con el Equipo 3.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail
+rules:
+  # Aun mas acotado que el de Prometheus: solo pods, porque lo unico que necesita es saber
+  # que pods hay en su nodo y con que etiquetas, para poner los labels correctos en Loki.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: promtail
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: default
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+data:
+  # NO es copia de ./promtail-config.yaml -- es la traduccion a Kubernetes, igual que con
+  # Prometheus. Se conservan las decisiones del Equipo 4 (que label indexar y cual no) y se
+  # cambia solo el mecanismo de descubrimiento y lectura.
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+
+    positions:
+      # /run es un hostPath: el archivo de posiciones sobrevive al reinicio del pod. Sin esto,
+      # al reiniciarse Promtail relee todo desde cero (logs duplicados en Loki) o arranca desde
+      # el final (se pierde la ventana del reinicio). Es el hallazgo #18 en su version K8s: en
+      # compose el mismo archivo apuntaba a /tmp, que tambien era efimero.
+      filename: /run/promtail/positions.yaml
+
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+
+    scrape_configs:
+      - job_name: kubernetes_pods
+        kubernetes_sd_configs:
+          - role: pod
+        pipeline_stages:
+          # containerd, no Docker. Ver la nota del encabezado.
+          - cri: {}
+          - json:
+              expressions:
+                level: level
+          # Misma decision del Equipo 4: `level` es de baja cardinalidad y se indexa;
+          # correlationId NO, porque tiene demasiados valores unicos y degradaria Loki.
+          # Para buscar por correlationId: {service="ms-tutorias"} |= "el-id"
+          - labels:
+              level:
+        relabel_configs:
+          # Solo los pods de ESTE nodo. Sin este filtro, los N pods del DaemonSet leerian
+          # todos los logs de todos los nodos y multiplicarian cada linea por N.
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: __host__
+
+          # `service` con el mismo significado que en compose, para que las consultas ya
+          # escritas por el Equipo 4 --{service="ms-tutorias"}-- sigan funcionando igual.
+          # En compose salia de com_docker_compose_service; aca, de la etiqueta `app`.
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: service
+
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+          # Donde estan fisicamente los archivos. La ruta real es
+          # /var/log/pods/<ns>_<pod>_<uid>/<contenedor>/*.log
+          - source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
+            separator: /
+            action: replace
+            replacement: /var/log/pods/*$1/*.log
+            target_label: __path__
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+spec:
+  selector:
+    matchLabels:
+      app: promtail
+  template:
+    metadata:
+      labels:
+        app: promtail
+    spec:
+      serviceAccountName: promtail
+      securityContext:
+        runAsUser: 0 # unica excepcion del proyecto: /var/log/pods es de root en el nodo
+      containers:
+        - name: promtail
+          image: grafana/promtail:2.9.4 # misma version fijada que en docker-compose.yml
+          args: ["-config.file=/etc/promtail/promtail.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # Lo usa el filtro __host__ de arriba para quedarse solo con los pods de su nodo.
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: http
+              containerPort: 9080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 9080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 9080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/promtail
+              readOnly: true
+            - name: positions
+              mountPath: /run/promtail
+            # Los dos de abajo son READ-ONLY a proposito: Promtail lee logs, nunca escribe.
+            - name: pods-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: containers-logs
+              mountPath: /var/log/containers
+              readOnly: true
+            # Equipo 5 (20/07), tras ver el fallo real: los archivos bajo /var/log/pods son
+            # SYMLINKS que apuntan aca. Montar solo el directorio de los enlaces hace que Promtail
+            # los siga y caiga en el vacio:
+            #   stat /var/log/pods/.../ms-auth/0.log: no such file or directory
+            # No es un problema de permisos --el mensaje seria "permission denied"-- sino de que
+            # el destino del enlace no estaba montado.
+            #
+            # docker-compose.yml YA montaba este directorio para promtail. El Equipo 4 lo tenia
+            # resuelto y al traducir el servicio no lo traslade: **porte el mecanismo y perdi una
+            # decision que ya estaba tomada.**
+            - name: docker-containers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: promtail-config
+        - name: positions
+          hostPath:
+            path: /run/promtail
+            type: DirectoryOrCreate
+        - name: pods-logs
+          hostPath:
+            path: /var/log/pods
+        - name: containers-logs
+          hostPath:
+            path: /var/log/containers
+        - name: docker-containers
+          hostPath:
+            path: /var/lib/docker/containers

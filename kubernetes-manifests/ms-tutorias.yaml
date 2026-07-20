@@ -37,6 +37,15 @@ spec:
         linkerd.io/inject: enabled
       labels:
         app: ms-tutorias
+        # Equipo 5 (20/07): etiqueta para que Prometheus recupere el label `service_name`.
+        # En compose ese label lo pone el Equipo 4 target por target en prometheus.yml
+        # (static_configs). En Kubernetes los targets se descubren solos y no hay donde
+        # escribirlos a mano, asi que el dato tiene que viajar CON el pod: Prometheus lo lee
+        # con relabel_configs desde __meta_kubernetes_pod_label_service_name.
+        # Sin esto el panel "Servicios activos (up)" de Isabel muestra "No data" aunque los 5
+        # esten sanos -- el mismo bug que ella arreglo en compose, reintroducido al cambiar de
+        # plataforma.
+        service_name: MS_Tutorias
     spec:
       # Equipo 5 (D4 de la auditoria, mitad Kubernetes): el USER del Dockerfile es una
       # preferencia de la imagen; securityContext es la garantia del cluster. Sin runAsNonRoot,

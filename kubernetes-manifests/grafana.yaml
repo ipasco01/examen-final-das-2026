@@ -1,0 +1,146 @@
+# kubernetes-manifests/grafana.yaml
+#
+# Equipo 5 (Deployment) — deuda #1, segunda parte.
+#
+# LOS CONFIGMAPS NO ESTAN EN ESTE ARCHIVO, Y ES UNA DECISION, NO UN OLVIDO.
+#
+# El dashboard del Equipo 4 son ~590 lineas de JSON que Isabel sigue editando. Copiarlas dentro de
+# un ConfigMap aca daria la propiedad linda de "todo se aplica con un solo kubectl apply", pero a
+# cambio dejaria el mismo contenido en dos archivos sincronizados a mano. **La duplicacion que se
+# desincroniza es exactamente el problema que esta zona viene combatiendo hace tres dias**: da lo
+# mismo si son variables de entorno, esquemas de BD o paneles de Grafana.
+#
+# Por eso los ConfigMaps se GENERAN desde los archivos reales, con una sola fuente de verdad:
+#
+#   kubectl create configmap grafana-datasources \
+#     --from-file=grafana/provisioning/datasources/ --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl create configmap grafana-dashboards \
+#     --from-file=grafana/provisioning/dashboards/  --dry-run=client -o yaml | kubectl apply -f -
+#
+# El costo asumido: `kubectl apply -f kubernetes-manifests/` deja de bastar para Grafana. Esos dos
+# comandos van en la seccion 4 del checklist y en el job k8s-arranque-real del CI. Se prefiere un
+# paso extra documentado antes que una copia que caduca en silencio.
+#
+# EL uid SE VERIFICO ANTES DE MONTAR EL VOLUMEN, no se dedujo:
+#   docker exec grafana id   ->   uid=472(grafana) gid=0(root)
+# Sin `fsGroup: 472` el PVC nace propiedad de root y Grafana --que corre como 472-- no puede
+# escribir en /var/lib/grafana: CrashLoopBackOff. Es el hallazgo #16 (el securityContext que rompio
+# las 5 bases y RabbitMQ) anticipado en vez de descubierto con los pods ya caidos.
+#
+# Deployment y no StatefulSet: Grafana guarda estado (su SQLite en /var/lib/grafana) pero no
+# necesita identidad de red estable ni un volumen por replica -- con 1 replica y un PVC alcanza.
+# Si algun dia se escala, ahi si hay que revisar: varias replicas sobre el mismo SQLite no funciona.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3000
+      targetPort: 3000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+spec:
+  replicas: 1
+  # Recreate y no RollingUpdate: el PVC es ReadWriteOnce, o sea que lo puede montar UN solo pod.
+  # Con RollingUpdate, Kubernetes intenta levantar el pod nuevo antes de matar el viejo y el nuevo
+  # queda colgado en ContainerCreating para siempre esperando un volumen que no se libera.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472    # verificado con `docker exec grafana id`, no supuesto
+        runAsGroup: 0     # la imagen usa gid 0, no 472
+        fsGroup: 472      # sin esto el PVC nace de root y Grafana no puede escribir
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.1.0 # misma version fijada que en docker-compose.yml
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # Equipo 5 (20/07): esta clave NO existia en el Secret de Kubernetes -- estaba solo en
+            # el .env para compose. **Es el hallazgo #11 en la direccion contraria** (ahi el
+            # JWT_SECRET estaba en K8s y faltaba en compose). Sin ella Grafana arranca con
+            # admin/admin por defecto y nadie se entera: el pod se ve perfectamente sano.
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-runtime-secrets
+                  key: GRAFANA_ADMIN_PASSWORD
+          # /api/health es el mismo endpoint que usa el healthcheck de compose. Grafana tarda en
+          # arrancar mientras aplica el provisioning, de ahi el initialDelay generoso.
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            # Las dos rutas replican lo que en compose es un unico bind mount de
+            # ./grafana/provisioning. Aca van separadas porque son dos ConfigMaps distintos.
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboards
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
