@@ -131,8 +131,7 @@
         };
 
         const cancelarTutoria = async (idTutoria, botonEl) => {
-            if (!confirm('¿Seguro que querés cancelar esta tutoría? Se liberará el horario del tutor.')) {
-                return;
+            if (!confirm('¿Seguro que quieres cancelar esta tutoría? Se liberará el horario del tutor.')) {    return;
             }
 
             const username = document.getElementById('username').value;
