@@ -368,7 +368,7 @@ HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 | # | Pendiente | Atributo en riesgo | Duenio |
 |---|---|---|---|
 | 1 | **Paridad compose ↔ K8s**: compose tiene 22 servicios, K8s cubre 11. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`, `alertmanager`, `mailpit`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
-| 2 | **`/health` propio en los microservicios**, separado de `/metrics`. Hoy las probes apuntan a `/metrics`, y desde que el Equipo 4 agrego Gauges con `collect()` que consultan la BD, un problema en Postgres hace que Kubernetes reinicie los pods de aplicacion: un fallo de la capa de datos se propaga a la de computo | Disponibilidad | Equipo 5 + Equipo 4 |
+| 2 | ~~**`/health` propio en los microservicios**~~ **CERRADO 20/07**: registrado antes del `rateLimit` y sin consultar la BD. Cerro con dos causas observadas -- el 429 del limitador (#19) y el 500 de los Gauges (#17) | Disponibilidad | Equipo 5 + Equipo 4 |
 | 3 | **Healthcheck en `otel-collector`** (unico pendiente: `toxiproxy`, `tempo` y `promtail` ya lo tienen). **Comprobado: en compose no se puede sin cambiar la imagen base** -- sin shell, y los 4 subcomandos de `/otelcol-contrib` son offline. Activar la extension `health_check` (puerto 13133) NO resuelve compose, solo habilita una probe `httpGet` cuando se porte a K8s, donde la ejecuta el kubelet desde afuera. Ver seccion 3 | Disponibilidad | Equipo 5 (imagen) + Equipo 4 (extension) |
 | 4 | **ConfigMap** para la configuracion no secreta, hoy duplicada inline en cada Deployment | Reproducibilidad | Equipo 5 |
 | 5 | **NetworkPolicy**: cualquier pod alcanza cualquier base | Seguridad | Equipo 5 + Equipo 3 |
@@ -546,6 +546,83 @@ docker exec loki cat /etc/loki/local-config.yaml | grep path_prefix
 Habria apostado por `/tmp/loki`, que es el default de otras versiones de la imagen. Montar en la
 ruta equivocada habria dejado el compose con aspecto de arreglado y a Loki perdiendo los logs
 igual: **peor que no tocarlo**, porque cierra la pregunta sin resolver el problema.
+
+
+### Hallazgo #19: el rate limiter mataba los 5 microservicios cada 10 minutos
+
+Al portar el pipeline de trazas quedo el cluster corriendo un rato largo, y aparecio esto:
+
+```
+Liveness probe failed: HTTP probe failed with statuscode: 429
+Readiness probe failed: HTTP probe failed with statuscode: 429
+```
+
+En los cinco. **Es aritmetica, no mala suerte:**
+
+| | Frecuencia | Peticiones en 15 min |
+|---|---|---|
+| readinessProbe | cada 10s | 90 |
+| livenessProbe | cada 15s | 60 |
+| **Total por pod** | | **150** |
+
+`app.use(rateLimit({ windowMs: 15*60*1000, max: 100 }))` esta declarado ANTES del middleware de
+metricas, asi que `/metrics` --a donde apuntaban las probes-- queda detras del limitador. A los
+~10 minutos el kubelet supera las 100 peticiones, empieza a recibir 429, la probe lo cuenta como
+fallo y con `failureThreshold: 3` Kubernetes reinicia el pod. **Los pods llevaban 6 reinicios en
+65 minutos: uno cada diez.**
+
+El limitador esta bien puesto: protege de abuso de usuarios. El error fue **poner las probes detras
+de un control pensado para trafico de usuarios.** Un kubelet no es un usuario.
+
+### Hallazgo #20: `timeoutSeconds` ausente en las probes de las 5 bases
+
+En los mismos eventos:
+
+```
+Liveness probe failed: command timed out: "pg_isready -U user_notificaciones ..." timed out after 1s
+```
+
+**Un segundo.** Es el hallazgo #4 --documentado para rabbitmq el 18/07-- que nunca se aplico a las
+bases: sus probes `exec` no declaraban `timeoutSeconds`, y el default de Kubernetes es 1. Corregido
+a 5s en las cinco. Un defecto que se arregla en un servicio y no en los otros cinco sigue siendo el
+mismo defecto.
+
+### Deuda #2 cerrada: `/health` propio, y por que va antes del rateLimit
+
+```js
+app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));  // <- primero
+app.use(rateLimit({ max: 100 }));
+app.use(metricsMiddleware);
+```
+
+El orden ES el arreglo. Y el endpoint **no consulta la base ni el broker**, deliberadamente.
+
+Esta deuda estaba anotada desde el 19/07 con una sola justificacion teorica (el acoplamiento con la
+capa de datos). Termino cerrandose con **dos causas independientes, las dos observadas**:
+
+| Causa | Sintoma | Hallazgo |
+|---|---|---|
+| Rate limiter | 429 tras ~10 min | #19 |
+| Gauges que consultan Postgres | 500 al faltar una tabla | #17 |
+
+**Criterio de diseño:** una liveness probe responde "¿hay que reiniciar este proceso?". Reiniciar un
+pod no arregla una base caida -- solo le quita una replica a un sistema ya degradado. Por eso el
+/health de liveness es tonto a proposito. Una probe que mire dependencias va en un endpoint aparte
+y solo para readiness, nunca para liveness.
+
+**Verificacion (no "aplique y no dio error"):** los 5 pods nuevos llevaron **15 minutos con
+`RESTARTS 0`**, pasando el umbral de ~10 min donde antes morian, y sin un solo evento 429 nuevo.
+
+### Lo que NO se arreglo, y por que
+
+RabbitMQ acumulo 18 reinicios con `rabbitmq-diagnostics -q ping timed out after 10s`. **No se
+toco.** La maquina estaba corriendo el stack de compose completo (22 contenedores) mas Kubernetes
+(13 pods) a la vez: ~35 contenedores compitiendo por CPU. Al bajar compose, RabbitMQ se estabilizo
+solo y lleva mas de 15 minutos sano sin ningun cambio en su manifiesto.
+
+**Era un artefacto de carga, no un defecto.** Subirle el timeout habria "arreglado" un sintoma
+inexistente y ocultado la causa real. Distinguir las dos cosas importa tanto como arreglar: el 429
+es determinista y pasa siempre; este dependia del entorno.
 
 ### Estado final verificado
 

@@ -128,12 +128,22 @@ spec:
               command: ["pg_isready", "-U", "user_agenda", "-d", "db_agenda"]
             initialDelaySeconds: 10
             periodSeconds: 10
+            # Equipo 5 (20/07): timeoutSeconds EXPLICITO. Faltaba, y el default de Kubernetes
+            # es 1 segundo -- el hallazgo #4 documentado para rabbitmq, que quedo sin aplicar aca.
+            # Bajo carga, pg_isready tarda mas de 1s y el evento fue real:
+            #   Liveness probe failed: command timed out: "pg_isready ..." timed out after 1s
+            timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
             exec:
               command: ["pg_isready", "-U", "user_agenda", "-d", "db_agenda"]
             initialDelaySeconds: 30
             periodSeconds: 15
+            # Equipo 5 (20/07): timeoutSeconds EXPLICITO. Faltaba, y el default de Kubernetes
+            # es 1 segundo -- el hallazgo #4 documentado para rabbitmq, que quedo sin aplicar aca.
+            # Bajo carga, pg_isready tarda mas de 1s y el evento fue real:
+            #   Liveness probe failed: command timed out: "pg_isready ..." timed out after 1s
+            timeoutSeconds: 5
             failureThreshold: 3
           resources:
             requests:

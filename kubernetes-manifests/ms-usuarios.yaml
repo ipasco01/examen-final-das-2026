@@ -53,16 +53,20 @@ spec:
           ports:
             - containerPort: 3001
           # --- Equipo 5: chequeos de salud ---
+          # Equipo 5 (20/07): las probes apuntaban a /metrics y eso fallaba por DOS causas
+          # independientes -- el rate limiter devolvia 429 tras ~10 min (hallazgo #19) y los Gauges
+          # del Equipo 4 consultan la BD, asi que un fallo de datos derribaba el pod (hallazgo #17).
+          # Ahora apuntan a /health, que se registra ANTES del rateLimit y no toca la base.
           readinessProbe:
             httpGet:
-              path: /metrics
+              path: /health
               port: 3001
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /metrics
+              path: /health
               port: 3001
             initialDelaySeconds: 30
             periodSeconds: 15

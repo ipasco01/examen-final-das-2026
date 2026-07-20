@@ -46,7 +46,7 @@ EXPOSE 3000
 #    corre como root dentro del contenedor: si alguien logra ejecucion remota, la logra como root.
 #    La app solo necesita leer su codigo y abrir un puerto > 1024, asi que no pierde nada.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget -q -O- http://localhost:${PORT:-3001}/metrics || exit 1
+  CMD wget -q -O- http://localhost:${PORT:-3001}/health || exit 1
 
 USER node
 

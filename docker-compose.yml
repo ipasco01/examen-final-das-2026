@@ -14,8 +14,12 @@ services:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
     # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    #
+    # 20/07: apunta a /health, no a /metrics. En Kubernetes /metrics rompia de dos formas (429 del
+    # rate limiter y 500 cuando fallaba la BD); en compose el sintoma no aparecia, pero mantener
+    # dos criterios de salud distintos por entorno es justo el drift que esta zona combate.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:4000/metrics || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:4000/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -51,8 +55,12 @@ services:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
     # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    #
+    # 20/07: apunta a /health, no a /metrics. En Kubernetes /metrics rompia de dos formas (429 del
+    # rate limiter y 500 cuando fallaba la BD); en compose el sintoma no aparecia, pero mantener
+    # dos criterios de salud distintos por entorno es justo el drift que esta zona combate.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:3001/metrics || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3001/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -93,8 +101,12 @@ services:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
     # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    #
+    # 20/07: apunta a /health, no a /metrics. En Kubernetes /metrics rompia de dos formas (429 del
+    # rate limiter y 500 cuando fallaba la BD); en compose el sintoma no aparecia, pero mantener
+    # dos criterios de salud distintos por entorno es justo el drift que esta zona combate.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:3002/metrics || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3002/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -153,8 +165,12 @@ services:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
     # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    #
+    # 20/07: apunta a /health, no a /metrics. En Kubernetes /metrics rompia de dos formas (429 del
+    # rate limiter y 500 cuando fallaba la BD); en compose el sintoma no aparecia, pero mantener
+    # dos criterios de salud distintos por entorno es justo el drift que esta zona combate.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:3003/metrics || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3003/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -234,8 +250,12 @@ services:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
     # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    #
+    # 20/07: apunta a /health, no a /metrics. En Kubernetes /metrics rompia de dos formas (429 del
+    # rate limiter y 500 cuando fallaba la BD); en compose el sintoma no aparecia, pero mantener
+    # dos criterios de salud distintos por entorno es justo el drift que esta zona combate.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/metrics || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -291,6 +311,10 @@ services:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
     # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    #
+    # 20/07: apunta a /health, no a /metrics. En Kubernetes /metrics rompia de dos formas (429 del
+    # rate limiter y 500 cuando fallaba la BD); en compose el sintoma no aparecia, pero mantener
+    # dos criterios de salud distintos por entorno es justo el drift que esta zona combate.
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/ || exit 1"]
       interval: 15s
@@ -329,6 +353,10 @@ services:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
     # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    #
+    # 20/07: apunta a /health, no a /metrics. En Kubernetes /metrics rompia de dos formas (429 del
+    # rate limiter y 500 cuando fallaba la BD); en compose el sintoma no aparecia, pero mantener
+    # dos criterios de salud distintos por entorno es justo el drift que esta zona combate.
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:9000/ || exit 1"]
       interval: 15s
@@ -524,6 +552,10 @@ services:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
     # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    #
+    # 20/07: apunta a /health, no a /metrics. En Kubernetes /metrics rompia de dos formas (429 del
+    # rate limiter y 500 cuando fallaba la BD); en compose el sintoma no aparecia, pero mantener
+    # dos criterios de salud distintos por entorno es justo el drift que esta zona combate.
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/-/healthy || exit 1"]
       interval: 15s
@@ -607,6 +639,10 @@ services:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
     # un proceso vivo pero sin responder HTTP figuraba como 'Up' y compose lo daba por bueno.
+    #
+    # 20/07: apunta a /health, no a /metrics. En Kubernetes /metrics rompia de dos formas (429 del
+    # rate limiter y 500 cuando fallaba la BD); en compose el sintoma no aparecia, pero mantener
+    # dos criterios de salud distintos por entorno es justo el drift que esta zona combate.
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health || exit 1"]
       interval: 15s
