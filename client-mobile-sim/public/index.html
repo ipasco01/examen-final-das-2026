@@ -41,6 +41,7 @@
         .payload-entry pre { margin: 0; padding: 0.9rem; background: #263238; color: #eceff1; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; word-wrap: break-word; max-height: 260px; overflow-y: auto; }
         .cabecera-SOLICITAR { background: #e3f2fd; color: #0d47a1; }
         .cabecera-CANCELAR { background: #eceff1; color: #37474f; }
+        .cabecera-REPROGRAMAR { background: #e0f2f1; color: #0d6e6e; }
         .cabecera-ERROR { background: #ffebee; color: #b71c1c; }
         .payload-vacio { color: #777; font-style: italic; }
         .reprogramar-btn { background: none; border: 1px solid #0d6e6e; color: #0d6e6e; padding: 0.3rem 0.6rem; font-size: 0.8rem; font-weight: 600; border-radius: 4px; margin-right: 0.4rem; }
@@ -240,9 +241,13 @@
                 const resultado = await response.json();
 
                 if (!response.ok) {
+                    registrarPayload('REPROGRAMAR', resultado, true);
                     throw new Error(resultado.error ? JSON.stringify(resultado.error) : 'Error desconocido');
                 }
 
+                registrarPayload('REPROGRAMAR', resultado);
+                // La reprogramación cambia la fecha (y puede cambiar el idBloqueo) de la tutoría:
+                // refrescamos la lista de una vez, mismo criterio que cancelarTutoria.
                 await cargarTutorias();
             } catch (error) {
                 alert(`No se pudo reprogramar: ${error.message}`);
