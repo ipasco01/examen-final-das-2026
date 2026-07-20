@@ -143,7 +143,7 @@ resulto falsa para 3 de los 4:
 | `tempo` | Tiene shell y `/usr/bin/wget` | `wget /ready` |
 | `promtail` | Sin `wget`/`curl`/`nc`, pero con `bash` + `/dev/tcp` | socket TCP al 9080 |
 | `toxiproxy` | Sin shell, pero **con su propio cliente** `/toxiproxy-cli` | `CMD` (no `CMD-SHELL`) sobre `toxiproxy-cli list` |
-| `otel-collector` | Sin shell y sin cliente propio utilizable | Pendiente, ver abajo |
+| `otel-collector` | Sin shell; trae `/otelcol-contrib` pero sus 4 subcomandos son offline (`validate`, `components`, `help`, `completion`) -- ninguno consulta al collector corriendo | Imposible en compose sin cambiar la imagen base, ver abajo |
 
 **La segunda correccion fue la mas instructiva.** Tras arreglar `tempo` y `promtail`, este
 documento seguia diciendo que `toxiproxy` no podia tener healthcheck "por falta de shell". Eso era
@@ -156,10 +156,39 @@ Este chequeo ademas es **mejor** que el de un socket TCP: `toxiproxy-cli list` n
 el puerto 8474 escucha, sino que la API de administracion responde y devuelve la configuracion de
 proxies.
 
-**El unico pendiente real: `otel-collector`.** Sin shell y sin un cliente propio que sirva para
-consultarse a si mismo. La solucion existe pero **no esta en mi zona**: el collector trae la
-extension `health_check`, que expone un endpoint en el puerto 13133 y hay que activarla en
-`otel-collector-config.yaml`:
+**El unico pendiente real: `otel-collector`, y la razon NO es la que este documento decia.**
+
+Durante dias aqui figuro que "la solucion existe pero no esta en mi zona: hay que activar la
+extension `health_check` en `otel-collector-config.yaml` (puerto 13133)". **Eso era incorrecto para
+compose**, y el error es sutil: mezcla dos mecanismos que se ejecutan en lugares distintos.
+
+| | Quien ejecuta la verificacion | Necesita un binario dentro del contenedor |
+|---|---|---|
+| Probe `httpGet` de Kubernetes | el **kubelet**, desde fuera del contenedor | **No** |
+| `healthcheck` de Docker Compose | el propio contenedor | **Si** |
+
+Activar `health_check` abre un puerto HTTP. En Kubernetes eso alcanza, porque el kubelet hace la
+peticion desde afuera. En compose no alcanza: Docker corre el comando *adentro*, y hay que tener con
+que llamar a ese puerto.
+
+**Comprobado el 20/07, en este orden y no al reves:**
+
+```bash
+docker exec otel-collector /bin/sh -c "echo hola"   # -> stat /bin/sh: no such file or directory
+docker exec otel-collector ls /                     # -> "ls": executable file not found in $PATH
+docker exec otel-collector /otelcol-contrib --help  # -> completion | components | help | validate
+```
+
+El tercer comando es el que importa, y es la leccion de `toxiproxy` aplicada: antes de decir "no se
+puede", buscar si la imagen trae su propio cliente. Aca lo trae, pero sus cuatro subcomandos son
+**offline**: `validate` revisa el archivo de configuracion sin arrancar nada y `components` lista lo
+compilado. Ninguno consulta a un collector en ejecucion.
+
+**Conclusion, ahora si respaldada:** en Docker Compose este servicio no puede tener healthcheck sin
+cambiar la imagen base (por ejemplo, una imagen propia que agregue un binario estatico). No es un
+pendiente del Equipo 4: activar la extension no resuelve compose. Lo que si corresponde pedirles es
+activarla **de cara al port a Kubernetes**, donde una probe `httpGet` al 13133 funciona sin nada
+adentro del contenedor:
 
 ```yaml
 extensions:
@@ -169,10 +198,11 @@ service:
   extensions: [health_check]
 ```
 
-Ese archivo define el pipeline de observabilidad del Equipo 4. Modificarlo sin acordar con ellos
-seria cambiar como funciona su servicio. Aqui el "es de otro equipo" si corresponde -- a diferencia
-de `toxiproxy`, donde me escude en eso indebidamente: el healthcheck es politica de despliegue, o
-sea mi zona, aunque la herramienta la use el Equipo 1 para inyectar fallos.
+**Por que vale la pena registrar este error.** Es el tercero del mismo tipo -- despues de la
+afirmacion sin verificar sobre los 4 distroless y del "no se puede" sobre `toxiproxy`. Los tres
+comparten la forma: **una limitacion real generalizada mas alla de lo que los datos permitian.**
+Aqui era cierto que falta la extension; lo falso era que activarla resolviera el healthcheck de
+compose. Una recomendacion correcta para un entorno, presentada como valida para los dos.
 
 **Metodo, en orden, antes de declarar que algo "no se puede":**
 
@@ -285,7 +315,7 @@ HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 |---|---|---|---|
 | 1 | **Paridad compose ↔ K8s**: compose tiene 20 servicios, K8s cubre 11. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
 | 2 | **`/health` propio en los microservicios**, separado de `/metrics`. Hoy las probes apuntan a `/metrics`, y desde que el Equipo 4 agrego Gauges con `collect()` que consultan la BD, un problema en Postgres hace que Kubernetes reinicie los pods de aplicacion: un fallo de la capa de datos se propaga a la de computo | Disponibilidad | Equipo 5 + Equipo 4 |
-| 3 | **Healthcheck en `otel-collector`** (unico pendiente: `toxiproxy`, `tempo` y `promtail` ya lo tienen, ver seccion 3). Hace falta habilitar la extension `health_check` en `otel-collector-config.yaml` (puerto 13133) y despues agregar el `CMD` aca | Disponibilidad | Equipo 4 |
+| 3 | **Healthcheck en `otel-collector`** (unico pendiente: `toxiproxy`, `tempo` y `promtail` ya lo tienen). **Comprobado: en compose no se puede sin cambiar la imagen base** -- sin shell, y los 4 subcomandos de `/otelcol-contrib` son offline. Activar la extension `health_check` (puerto 13133) NO resuelve compose, solo habilita una probe `httpGet` cuando se porte a K8s, donde la ejecuta el kubelet desde afuera. Ver seccion 3 | Disponibilidad | Equipo 5 (imagen) + Equipo 4 (extension) |
 | 4 | **ConfigMap** para la configuracion no secreta, hoy duplicada inline en cada Deployment | Reproducibilidad | Equipo 5 |
 | 5 | **NetworkPolicy**: cualquier pod alcanza cualquier base | Seguridad | Equipo 5 + Equipo 3 |
 | 6 | **StorageClass explicita** en los `volumeClaimTemplates` (hoy dependen de la default del cluster) | Portabilidad | Equipo 5 |
