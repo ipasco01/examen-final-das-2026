@@ -15,19 +15,22 @@
 #   1 contenedor                         DaemonSet: 1 pod POR NODO
 #   docker_sd_configs (socket)           kubernetes_sd_configs (API)
 #   /var/lib/docker/containers           /var/log/pods (hostPath)
-#   pipeline `docker: {}`                pipeline `cri: {}`
+#   pipeline `docker: {}`                depende del runtime (ver nota abajo)
 #   label com_docker_compose_service     label `app` del pod
 #
 # DaemonSet y no Deployment: los logs de un pod estan en el disco del NODO donde corre. Un
 # Deployment con 1 replica solo veria los logs de su propio nodo y perderia el resto en
 # silencio. Con DaemonSet, Kubernetes garantiza una copia por nodo.
 #
-# ── `cri: {}` EN VEZ DE `docker: {}` ──────────────────────────────────────────────────────
-# Docker envuelve cada linea en JSON: {"log":"...","stream":"stdout","time":"..."}.
-# containerd --el runtime de kind y de casi todo cluster moderno-- usa el formato CRI, que es
-# texto plano con prefijo. Dejar `docker: {}` no da error visible: Promtail arranca, la probe
-# pasa, y los logs llegan a Loki **sin parsear**, como una sola cadena inutil. Es la clase de
-# fallo que se ve solo mirando el resultado en Grafana, no el estado del pod.
+# ── EL PARSEO DEPENDE DEL RUNTIME, NO DE LA PLATAFORMA ────────────────────────────────────
+# Escribi primero `cri: {}` asumiendo que Kubernetes implica containerd. Es falso: **Docker
+# Desktop usa dockerd**, y sus logs son JSON de Docker igual que en compose. Con `cri` las
+# lineas llegaban a Loki sin parsear y el pod se veia perfectamente sano -- Ready, probe en
+# verde, "successfully rolled out". Se detecto comparando el panel de Grafana de compose
+# (3005, texto limpio) contra el de Kubernetes (3006, JSON crudo).
+#
+# Hoy usa `docker: {}` porque es lo que corre en la demo. En kind --el CI-- el runtime es
+# containerd y corresponderia `cri: {}`. Deuda #17.
 #
 # ── SOBRE runAsUser: 0 (root) ─────────────────────────────────────────────────────────────
 # Es la UNICA excepcion a `runAsNonRoot` en todo el proyecto, y no me gusta, pero es
@@ -91,8 +94,23 @@ data:
         kubernetes_sd_configs:
           - role: pod
         pipeline_stages:
-          # containerd, no Docker. Ver la nota del encabezado.
-          - cri: {}
+          # CORREGIDO EL 20/07 MIRANDO GRAFANA, no leyendo documentacion.
+          #
+          # Estaba `cri: {}` porque asumi que Kubernetes implica containerd. **Falso para Docker
+          # Desktop**, que usa dockerd: sus logs son JSON de Docker, igual que en compose. Con
+          # `cri` las lineas llegaban a Loki envueltas y sin parsear:
+          #   {"log":"...\u0009info\u0009TracesExporter...","stream":"stderr","time":"..."}
+          #
+          # El pod estaba Ready, la probe pasaba y el DaemonSet decia "successfully rolled out".
+          # **Solo se ve comparando el panel de Grafana de compose contra el de Kubernetes.**
+          #
+          # OJO, DEPENDE DEL ENTORNO Y ESO NO SE PUEDE ESCONDER:
+          #   Docker Desktop (dockerd)     -> docker: {}   <- lo que corre en la demo
+          #   kind / clusters reales       -> cri: {}      <- lo que corre en el CI
+          # Es la tesis de esta zona aplicada al ultimo archivo que escribi: el mismo manifiesto,
+          # dos runtimes, comportamiento distinto. Queda como deuda #17: o se detecta el runtime,
+          # o se mantienen dos overlays. Hoy se prioriza el entorno de la demo.
+          - docker: {}
           - json:
               expressions:
                 level: level
@@ -102,6 +120,19 @@ data:
           - labels:
               level:
         relabel_configs:
+          # Equipo 5 (20/07): descartar el plano de control. Sin esto, Promtail intenta leer
+          # coredns, kube-proxy, storage-provisioner y vpnkit-controller, cuyos logs Docker
+          # Desktop no deja donde Kubernetes dice, y llena Loki de:
+          #   msg="failed to tail file, stat failed" ... no such file or directory
+          #
+          # No es solo ruido. **Los logs del plano de control de Kubernetes no son observabilidad
+          # de esta aplicacion.** Quien busque un error en Loki quiere ver sus microservicios, no
+          # el DNS interno del cluster. Mezclarlos hace mas dificil encontrar lo que importa, que
+          # es lo contrario de para lo que existe la observabilidad.
+          - source_labels: [__meta_kubernetes_namespace]
+            regex: kube-system
+            action: drop
+
           # Solo los pods de ESTE nodo. Sin este filtro, los N pods del DaemonSet leerian
           # todos los logs de todos los nodos y multiplicarian cada linea por N.
           - source_labels: [__meta_kubernetes_pod_node_name]

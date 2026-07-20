@@ -240,6 +240,27 @@ jobs:
             --from-literal=RABBITMQ_URL=amqp://ci-broker:ci-broker-pass@rabbitmq-service:5672
           kubectl create secret generic app-jwt-secret --from-literal=JWT_SECRET=ci-jwt-secret
 
+      - name: Crear los ConfigMaps que se generan desde archivos
+        # AGREGADO EL 20/07 PORQUE EL JOB FALLO SIN ESTO.
+        #
+        # Tres ConfigMaps NO estan dentro de kubernetes-manifests/: se generan desde los archivos
+        # reales para no duplicar contenido que se desincroniza (el dashboard de Grafana son ~590
+        # lineas de JSON que el Equipo 4 edita seguido). La decision esta explicada en
+        # grafana.yaml, y su costo asumido era que `kubectl apply -f kubernetes-manifests/` deja
+        # de bastar.
+        #
+        # **Ese costo quedo escrito y no se pago.** En grafana.yaml dice literalmente que estos
+        # comandos "van en la seccion 4 del checklist y en el job k8s-arranque-real del CI" -- y
+        # solo fueron al checklist. El job apuntaba a montar volumenes de ConfigMaps inexistentes:
+        # prometheus y grafana quedaban en ContainerCreating para siempre y el rollout expiraba.
+        #
+        # Es el mismo patron que este workflow persigue, cometido en el propio workflow: el
+        # requisito documentado y no ejecutado.
+        run: |
+          kubectl create configmap prometheus-rules --from-file=alert_rules.yml
+          kubectl create configmap grafana-datasources --from-file=grafana/provisioning/datasources/
+          kubectl create configmap grafana-dashboards --from-file=grafana/provisioning/dashboards/
+
       - name: Desplegar
         # Se excluyen dos archivos, y el motivo esta documentado en el checklist:
         #   kong-security.yaml -> usa CRDs de Kong (KongPlugin/KongConsumer) que no estan instalados
