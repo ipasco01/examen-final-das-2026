@@ -155,4 +155,33 @@ const cancelarTutoria = async (req, res, next) => {
     }
 };
 
-module.exports = { postSolicitud, getTutoriaPorId, getTutoriasDelEstudiante, cancelarTutoria };
+// Reprogramación de una tutoría CONFIRMADA (completa el alcance Rep&Cancel). Validación de forma
+// aquí (mismo criterio que validarSolicitud); las reglas de negocio (futura, distinta, ownership)
+// viven en el servicio. El JWT se reenvía porque la saga llama a ms-usuarios y ms-agenda.
+const reprogramarTutoria = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { nuevaFecha, duracionMinutos } = req.body;
+
+        if (!nuevaFecha || Number.isNaN(new Date(nuevaFecha).getTime())) {
+            throw Object.assign(new Error('El campo "nuevaFecha" debe ser una fecha válida en formato ISO 8601.'), { statusCode: 400 });
+        }
+        const duracion = duracionMinutos === undefined ? 60 : duracionMinutos;
+        if (typeof duracion !== 'number' || !Number.isFinite(duracion) || duracion <= 0) {
+            throw Object.assign(new Error('El campo "duracionMinutos" debe ser un número positivo.'), { statusCode: 400 });
+        }
+
+        const resultado = await tutoriaService.reprogramarTutoria(
+            id,
+            req.user.sub,
+            { nuevaFecha, duracionMinutos: duracion },
+            req.correlationId,
+            req.header('Authorization')
+        );
+        res.status(200).json(toTutoriaResponse(resultado));
+    } catch (error) {
+        next(error);
+    }
+};
+
+module.exports = { postSolicitud, getTutoriaPorId, getTutoriasDelEstudiante, cancelarTutoria, reprogramarTutoria };

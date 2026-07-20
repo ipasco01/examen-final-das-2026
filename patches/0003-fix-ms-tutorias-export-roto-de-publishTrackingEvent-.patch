@@ -1,0 +1,78 @@
+From 0a6b72ebe5a3156ae652a7faab7a7ef02fdce439 Mon Sep 17 00:00:00 2001
+From: manuel5717p <ariasvillanuevam14@gmail.com>
+Date: Sun, 19 Jul 2026 14:09:00 -0500
+Subject: [PATCH 3/3] =?UTF-8?q?fix(ms-tutorias):=20export=20roto=20de=20pu?=
+ =?UTF-8?q?blishTrackingEvent=20y=20reenv=C3=ADo=20de=20JWT=20en=20cancela?=
+ =?UTF-8?q?ci=C3=B3n?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ ms-tutorias/src/api/controllers/tutorias.controller.js    | 3 ++-
+ ms-tutorias/src/domain/services/tutoria.service.js        | 8 ++++----
+ .../src/infrastructure/messaging/message.producer.js      | 4 +++-
+ 3 files changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/ms-tutorias/src/api/controllers/tutorias.controller.js b/ms-tutorias/src/api/controllers/tutorias.controller.js
+index f997508..4f78985 100644
+--- a/ms-tutorias/src/api/controllers/tutorias.controller.js
++++ b/ms-tutorias/src/api/controllers/tutorias.controller.js
+@@ -147,7 +147,8 @@ const getTutoriasDelEstudiante = async (req, res, next) => {
+ const cancelarTutoria = async (req, res, next) => {
+     try {
+         const { id } = req.params;
+-        const resultado = await tutoriaService.cancelarTutoria(id, req.user.sub, req.correlationId);
++        // Reenviar el JWT del usuario: ms-agenda ahora exige token también en DELETE /bloqueos.
++        const resultado = await tutoriaService.cancelarTutoria(id, req.user.sub, req.correlationId, req.header('Authorization'));
+         res.status(200).json(toTutoriaResponse(resultado));
+     } catch (error) {
+         next(error);
+diff --git a/ms-tutorias/src/domain/services/tutoria.service.js b/ms-tutorias/src/domain/services/tutoria.service.js
+index 74bcfcd..ef6133c 100644
+--- a/ms-tutorias/src/domain/services/tutoria.service.js
++++ b/ms-tutorias/src/domain/services/tutoria.service.js
+@@ -255,7 +255,7 @@ const listarTutoriasPorEstudiante = async (idEstudiante) => tutoriaRepository.fi
+ // estudiante, "cancelar" siempre debe funcionar; liberar el horario en ms-agenda es una
+ // preocupación operativa de fondo (reintentada por el worker si el intento inmediato falla), no
+ // algo que deba bloquear ni revertir la cancelación.
+-const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, correlationId) => {
++const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, correlationId, authHeader) => {
+     const trackCid = (message, status = 'INFO') => track(correlationId, message, status);
+ 
+     const tutoria = await tutoriaRepository.findById(idTutoria);
+@@ -283,7 +283,7 @@ const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, co
+ 
+         for (let intento = 1; intento <= COMPENSACION_MAX_INTENTOS && !liberado; intento++) {
+             try {
+-                await agendaClient.cancelarBloqueo(idBloqueo, correlationId);
++                await agendaClient.cancelarBloqueo(idBloqueo, correlationId, authHeader);
+                 liberado = true;
+                 trackCid(`Horario liberado en intento ${intento}.`);
+             } catch (err) {
+@@ -314,7 +314,7 @@ const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, co
+     return tutoriaCancelada;
+ };
+ 
+-const cancelarTutoria = (idTutoria, idEstudianteSolicitante, correlationId) =>
+-    conTimeoutDeSaga(() => ejecutarCancelacionTutoria(idTutoria, idEstudianteSolicitante, correlationId));
++const cancelarTutoria = (idTutoria, idEstudianteSolicitante, correlationId, authHeader) =>
++    conTimeoutDeSaga(() => ejecutarCancelacionTutoria(idTutoria, idEstudianteSolicitante, correlationId, authHeader));
+ 
+ module.exports = { solicitarTutoria, obtenerTutoriaPorId, listarTutoriasPorEstudiante, cancelarTutoria };
+diff --git a/ms-tutorias/src/infrastructure/messaging/message.producer.js b/ms-tutorias/src/infrastructure/messaging/message.producer.js
+index 772edb1..623a38f 100644
+--- a/ms-tutorias/src/infrastructure/messaging/message.producer.js
++++ b/ms-tutorias/src/infrastructure/messaging/message.producer.js
+@@ -141,5 +141,7 @@ const publishTrackingEvent = async (payload) => {
+ module.exports = {
+     connect,
+     publishToQueue,
+-    publishTrackingEvent // <-- Exportar la nueva función
++    // Alias: la función original fue comentada y reemplazada por publishTrackingEventStatus;
++    // los consumidores (tutoria.service, clients, workers) siguen importando publishTrackingEvent.
++    publishTrackingEvent: publishTrackingEventStatus
+ };
+-- 
+2.51.2.windows.1
+
