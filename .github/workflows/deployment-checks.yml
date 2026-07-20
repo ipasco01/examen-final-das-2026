@@ -85,6 +85,40 @@ jobs:
           print(f"OK: {len(servicios)} servicios, todos con restart")
           EOF
 
+      - name: Todo servicio declara healthcheck
+        # AGREGADO EL 20/07, y con motivo concreto: el merge del Equipo 4 incorporo `alertmanager`
+        # y `mailpit` SIN healthcheck, y ningun job dijo nada. D1 es el issue fundacional de esta
+        # zona -- "un proceso vivo pero sin responder figura como Up y compose lo da por bueno" --
+        # y era justamente la unica regla de la politica que el pipeline no verificaba.
+        #
+        # Es el mismo hueco que tenia el chequeo de :latest: un control que parece cubrir la
+        # politica y deja pasar lo que mas importa. La diferencia es que este se detecto mirando
+        # trabajo entrante, antes de que causara dañio.
+        #
+        # EXCEPCION UNICA Y COMPROBADA: otel-collector. La imagen no tiene shell y sus 4
+        # subcomandos (`validate`, `components`, `help`, `completion`) son offline: ninguno
+        # consulta al collector corriendo. Verificado con tres `docker exec`, documentado en la
+        # seccion 3 de docs/deployment-release-checklist.md. La lista es explicita a proposito:
+        # agregar un servicio aca obliga a justificarlo por escrito, que es el punto.
+        run: |
+          python3 - <<'EOF'
+          import yaml, sys
+          SIN_HEALTHCHECK_JUSTIFICADO = {
+              'otel-collector': 'imagen sin shell; los subcomandos de /otelcol-contrib son offline',
+          }
+          servicios = yaml.safe_load(open('docker-compose.yml'))['services']
+          faltan = [n for n, s in servicios.items()
+                    if 'healthcheck' not in s and n not in SIN_HEALTHCHECK_JUSTIFICADO]
+          if faltan:
+              for n in faltan:
+                  print(f"::error::{n}: sin healthcheck. Un contenedor 'Up' no es un servicio sano. "
+                        f"Si de verdad no se puede, agregalo a SIN_HEALTHCHECK_JUSTIFICADO con el motivo.")
+              sys.exit(1)
+          exentos = len(SIN_HEALTHCHECK_JUSTIFICADO)
+          print(f"OK: {len(servicios) - exentos} de {len(servicios)} con healthcheck "
+                f"({exentos} exento documentado)")
+          EOF
+
       - name: Ningun secreto real versionado
         # Se busca lo contrario de lo intuitivo: un placeholder es SANO (significa que el valor
         # real no esta en el repo). Lo que se bloquea es que aparezca un placeholder NUEVO en un

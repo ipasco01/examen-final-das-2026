@@ -531,7 +531,7 @@ services:
       ms-tutorias:
         condition: service_started # Esperar a que al menos uno arranque
 
-   # --- Alerting (Alertmanager + Mailpit como SMTP falso para demo local) ---
+  # --- Alerting (Alertmanager + Mailpit como SMTP falso para demo local) ---
   alertmanager:
     image: prom/alertmanager:v0.27.0
     container_name: alertmanager
@@ -542,13 +542,39 @@ services:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
     ports:
       - "9093:9093" # UI de Alertmanager: ver alertas agrupadas, silenciarlas, etc.
+    # Equipo 5 (20/07): healthcheck. Entro sin uno en el merge del Equipo 4 -- con `restart` e
+    # imagen fijada, o sea que ya incorporaron las dos reglas anteriores, pero D1 seguia sin
+    # verificarse. Ver el chequeo nuevo en .github/workflows/deployment-checks.yml, que ahora
+    # falla si un servicio entra sin healthcheck: la regla dejaba de depender de que alguien la
+    # recordara en la revision.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9093/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
-      - mailpit
+      # Equipo 5: era `- mailpit` (forma corta), que solo espera a que el contenedor EXISTA.
+      # Alertmanager arrancaba antes de que el SMTP de mailpit estuviera escuchando, y una alerta
+      # disparada en esa ventana se perdia sin ruido -- el mismo problema que el Equipo 4 acaba de
+      # resolver un nivel mas arriba al conectar Prometheus con Alertmanager.
+      mailpit:
+        condition: service_healthy
 
   mailpit:
     image: axllent/mailpit:v1.20
     container_name: mailpit
     restart: unless-stopped
+    # Equipo 5 (20/07): healthcheck sobre /readyz. No es cosmetico -- es el que hace posible el
+    # `condition: service_healthy` de alertmanager: sin un healthcheck aca, esa condicion no se
+    # puede expresar. Por eso el orden importa: primero se declara la salud, despues se puede
+    # depender de ella.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8025/readyz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     ports:
       - "8025:8025" # UI web: acá se ven los "correos" que llegan
       - "1025:1025" # Puerto SMTP falso al que le apunta Alertmanager

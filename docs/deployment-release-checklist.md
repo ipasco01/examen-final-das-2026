@@ -3,8 +3,8 @@
 Qué debe existir y verificarse **antes** de dar por desplegado el sistema. Cada punto es
 verificable con un comando: si no se puede comprobar, no está hecho.
 
-Rama: `equipo5-deployment` · Ultima verificacion completa: 19/07 noche, **20 servicios en compose
-(19 con healthcheck)** y 12 workloads en Kubernetes (6 StatefulSets + 5 Deployments + ingress).
+Rama: `equipo5-deployment` · Ultima verificacion completa: 20/07, **22 servicios en compose
+(21 con healthcheck)** y 12 workloads en Kubernetes (6 StatefulSets + 5 Deployments + ingress).
 
 La tag de imagen NO se fija en este documento a proposito: es `git rev-parse --short HEAD` del
 commit desplegado, y queda obsoleta en cuanto alguien commitea. Ver seccion 2.
@@ -68,7 +68,7 @@ de publicarse.** Nunca `latest` en un manifiesto.
 ```powershell
 $env:IMAGE_TAG = git rev-parse --short HEAD
 docker compose up -d --build
-docker compose ps                                  # 20 servicios arriba
+docker compose ps                                  # 22 servicios arriba
 foreach ($p in 4000,3001,3002,3003,3000) { curl.exe -m 5 -f "http://localhost:$p/metrics" > $null; "$p -> $LASTEXITCODE" }
 ```
 
@@ -79,8 +79,8 @@ ms-notificaciones 3003, ms-tutorias 3000.
 
 ## 3. Docker Compose
 
-- [ ] Los 20 servicios levantan con un solo `docker compose up -d`.
-- [ ] **19 de los 20** servicios llegan a `healthy` (no solo `Up`). El unico restante es
+- [ ] Los 22 servicios levantan con un solo `docker compose up -d`.
+- [ ] **21 de los 22** servicios llegan a `healthy` (no solo `Up`). El unico restante es
       `otel-collector`, y la razon esta comprobada y tiene dueño.
 
 **Hallazgo del 19/07 (noche): `ms-notificaciones` sin base de datos.** El merge del Equipo 2
@@ -126,6 +126,28 @@ Lo revelador es que el chequeo de `restart`, tres lineas mas abajo en el mismo w
 tuvo este problema: parsea el YAML y pregunta `if 'restart' not in s`. Pregunta por la ausencia.
 La tecnica correcta ya estaba en el archivo; el error fue elegir un grep para el chequeo de al
 lado. Corregido: ahora ambos parsean el YAML.
+
+**Hallazgo del 20/07: el CI no verificaba healthchecks -- justo la regla fundacional de esta zona.**
+El merge `b4d0a8a` del Equipo 4 incorporo `alertmanager` y `mailpit`. Los dos con `restart` y con
+imagen fijada por version: **incorporaron las dos reglas que este PR venia peleando**, lo cual es
+una buena noticia sobre el proceso. Pero los dos sin `healthcheck`, y **ningun job dijo nada**.
+
+El pipeline validaba `restart`, `:latest` y secretos. D1 -- "un proceso vivo pero sin responder
+figura como `Up` y compose lo da por bueno" -- era la unica regla de la politica sin chequeo
+automatico. La misma forma que el hueco del lint de `:latest`, dos horas antes: **un control que
+parece cubrir la politica y deja pasar lo que mas importa.**
+
+La diferencia, y por eso vale registrarlo aparte: este se encontro **revisando trabajo entrante
+antes de integrarlo**, no despues de que rompiera algo. Es el primero de los catorce hallazgos
+detectado de forma preventiva.
+
+Corregido en el mismo merge: healthcheck en ambos (`/-/healthy` en 9093, `/readyz` en 8025), el
+`depends_on: - mailpit` cambiado a `condition: service_healthy` -- Alertmanager arrancaba antes de
+que el SMTP escuchara, y una alerta disparada en esa ventana se perdia sin ruido -- y un chequeo
+nuevo en el workflow con una lista explicita de exenciones, hoy solo `otel-collector`.
+
+Verificado en las dos direcciones: el chequeo pasa con el compose corregido y **falla contra el
+estado exacto en que llego del Equipo 4**.
 
 **Limite honesto de nuestro propio CI:** el job `arranque-real` NO habria detectado esto. El
 servicio arranca bien y responde `/metrics`; el fallo aparece recien en la primera notificacion que
@@ -308,12 +330,12 @@ python -c "import yaml;d=yaml.safe_load(open('docker-compose.yml'));print([n for
 
 Actualizado 19/07 tras la auditoria cruzada. Lo que estaba abierto el 18/07 y ya se cerro:
 imagenes propias por tag de commit, tempo/otel fijados por digest, esquema de BD versionado en
-`docker/init/`, healthchecks en 19 de 20 servicios, HPA + PDB, securityContext, USER no-root y
+`docker/init/`, healthchecks en 21 de 22 servicios, HPA + PDB, securityContext, USER no-root y
 HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 
 | # | Pendiente | Atributo en riesgo | Duenio |
 |---|---|---|---|
-| 1 | **Paridad compose ↔ K8s**: compose tiene 20 servicios, K8s cubre 11. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
+| 1 | **Paridad compose ↔ K8s**: compose tiene 22 servicios, K8s cubre 11. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`, `alertmanager`, `mailpit`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
 | 2 | **`/health` propio en los microservicios**, separado de `/metrics`. Hoy las probes apuntan a `/metrics`, y desde que el Equipo 4 agrego Gauges con `collect()` que consultan la BD, un problema en Postgres hace que Kubernetes reinicie los pods de aplicacion: un fallo de la capa de datos se propaga a la de computo | Disponibilidad | Equipo 5 + Equipo 4 |
 | 3 | **Healthcheck en `otel-collector`** (unico pendiente: `toxiproxy`, `tempo` y `promtail` ya lo tienen). **Comprobado: en compose no se puede sin cambiar la imagen base** -- sin shell, y los 4 subcomandos de `/otelcol-contrib` son offline. Activar la extension `health_check` (puerto 13133) NO resuelve compose, solo habilita una probe `httpGet` cuando se porte a K8s, donde la ejecuta el kubelet desde afuera. Ver seccion 3 | Disponibilidad | Equipo 5 (imagen) + Equipo 4 (extension) |
 | 4 | **ConfigMap** para la configuracion no secreta, hoy duplicada inline en cada Deployment | Reproducibilidad | Equipo 5 |
@@ -321,7 +343,7 @@ HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 | 6 | **StorageClass explicita** en los `volumeClaimTemplates` (hoy dependen de la default del cluster) | Portabilidad | Equipo 5 |
 | 7 | **Topologia de RabbitMQ declarativa** (`definitions.json`). Hoy exchanges, colas y DLQ nacen de los `assertExchange`/`assertQueue` del codigo: la topologia depende de que servicio arranque primero y con que version | Confiabilidad | Equipo 2 |
 | 8 | ~~**Instrumentacion OTel en los microservicios**~~ **CERRADO 19/07** por el merge `f48911e` del Equipo 4: los 5 servicios traen el SDK y arrancan con `node -r ./src/config/tracing.js`. Verificado: `grep -h opentelemetry ms-*/package.json` devuelve 6 paquetes | Observabilidad | Equipo 4 |
-| 9 | **Provisioning de Grafana y Alertmanager**. Las reglas de `alert_rules.yml` se evaluan pero no hay destinatario configurado: una alerta que nadie recibe da sensacion de cobertura sin darla | Observabilidad | Equipo 4 |
+| 9 | ~~**Provisioning de Grafana y Alertmanager**~~ **CERRADO 20/07** por el merge `b4d0a8a` del Equipo 4: Alertmanager + Mailpit como SMTP local, dashboard provisionado, y el bloque `alerting` en `prometheus.yml` que faltaba para que las reglas evaluadas le llegaran a alguien | Observabilidad | Equipo 4 |
 | 10 | **Separar los workers del proceso HTTP en ms-tutorias**. Cada replica agrega otra copia de los tres pollers compitiendo por las mismas filas; por eso su HPA tiene `maxReplicas: 2` mientras el resto tiene 4 | Escalabilidad | Equipo 1 + Equipo 5 |
 | 11 | **Test de integracion que ejercite el flujo, no solo el arranque.** Limite comprobado de nuestro propio CI: el job `arranque-real` no habria detectado la BD faltante de `ms-notificaciones` ni el `JWT_SECRET` faltante, porque en los dos casos el proceso levanta y responde `/metrics`; el fallo aparece recien en la primera peticion real | Verificabilidad | Equipo 5 |
 | 12 | **Variables OTel ausentes en los 5 Deployments de K8s.** Ningun manifiesto define `OTEL_SERVICE_NAME` ni `OTEL_EXPORTER_OTLP_ENDPOINT`. `tracing.js` cae a su default `http://otel-collector:4317`, que en el cluster no resuelve (el collector solo existe en compose): el exportador reintenta en silencio y no hay trazas. No rompe el servicio, y por eso pasa desapercibido. Es la cara concreta de la deuda #1 | Observabilidad | Equipo 5 + Equipo 4 |
