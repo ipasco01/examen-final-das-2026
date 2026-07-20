@@ -51,8 +51,23 @@ const findEstudianteById = async (id) => {
     }
 };
 
+// Deuda #14: `especialidad` era un VARCHAR libre en `tutores` (un tutor = una sola materia, sin
+// catalogo). Ahora sale de `materias`/`tutor_materia` via LEFT JOIN + array_agg -- LEFT JOIN (no
+// INNER) para que un tutor sin materias asignadas siga apareciendo, con `materias: []` en vez de
+// desaparecer del resultado.
 const findTutorById = async (id) => {
-    const queryText = 'SELECT * FROM tutores WHERE id = $1';
+    const queryText = `
+        SELECT
+            t.id,
+            t.nombreCompleto,
+            t.email,
+            COALESCE(array_agg(m.nombre) FILTER (WHERE m.nombre IS NOT NULL), '{}') AS materias
+        FROM tutores t
+        LEFT JOIN tutor_materia tm ON tm.idTutor = t.id
+        LEFT JOIN materias m ON m.id = tm.idMateria
+        WHERE t.id = $1
+        GROUP BY t.id, t.nombreCompleto, t.email
+    `;
     try {
         const res = await db.query(queryText, [id]);
         return res.rows[0];
@@ -69,10 +84,20 @@ const findTutorById = async (id) => {
 // agregue a `tutores` en el futuro (telefono, documento, lo que sea) sin que nadie lo decida.
 // Buscar por ID devuelve un registro que el llamador ya sabe que pidio; listar es distinto.
 //
-// Ordenado por especialidad porque asi se muestra en el selector, y un orden estable evita que
-// las opciones cambien de lugar entre recargas.
+// Ordenado por nombreCompleto (ya no por especialidad, que dejo de ser una columna: un tutor
+// puede tener 0..N materias ahora) para que el orden del desplegable sea estable entre recargas.
 const findAllTutores = async () => {
-    const queryText = 'SELECT id, nombreCompleto, especialidad FROM tutores ORDER BY especialidad';
+    const queryText = `
+        SELECT
+            t.id,
+            t.nombreCompleto,
+            COALESCE(array_agg(m.nombre) FILTER (WHERE m.nombre IS NOT NULL), '{}') AS materias
+        FROM tutores t
+        LEFT JOIN tutor_materia tm ON tm.idTutor = t.id
+        LEFT JOIN materias m ON m.id = tm.idMateria
+        GROUP BY t.id, t.nombreCompleto
+        ORDER BY t.nombreCompleto
+    `;
     try {
         const res = await db.query(queryText);
         return res.rows;
@@ -82,8 +107,23 @@ const findAllTutores = async () => {
     }
 };
 
+// Catalogo de materias -- lo que la deuda #14 senalaba que faltaba para poder ofrecer un <select>
+// en el cliente ("no hay catalogo de donde poblarlo"). Mismo criterio que findAllTutores: columnas
+// explicitas, orden estable.
+const findAllMaterias = async () => {
+    const queryText = 'SELECT id, nombre FROM materias ORDER BY nombre';
+    try {
+        const res = await db.query(queryText);
+        return res.rows;
+    } catch (err) {
+        console.error('Error ejecutando query findAllMaterias:', err.stack);
+        throw buildUndefinedTableError(err);
+    }
+};
+
 module.exports = {
     findEstudianteById,
     findTutorById,
-    findAllTutores
+    findAllTutores,
+    findAllMaterias
 };

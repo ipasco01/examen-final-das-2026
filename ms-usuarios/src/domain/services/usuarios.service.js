@@ -28,8 +28,13 @@ const getTutor = async (id) => {
 // "no hay nada" como una falla. Se devuelve [] y el llamador decide que mostrar.
 const listarTutores = async () => usuariosRepository.findAllTutores();
 
+// Mismo criterio que listarTutores: catalogo vacio es un estado legitimo (nadie cargo materias
+// todavia), no un error.
+const listarMaterias = async () => usuariosRepository.findAllMaterias();
+
 module.exports = {
     getEstudiante,
     getTutor,
-    listarTutores
+    listarTutores,
+    listarMaterias
 };

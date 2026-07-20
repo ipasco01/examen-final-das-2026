@@ -43,8 +43,22 @@ const listarTutores = async (req, res, next) => {
     }
 };
 
+const listarMaterias = async (req, res, next) => {
+    const cid = req.correlationId;
+    try {
+        track(cid, 'Listando catálogo de materias');
+        const materias = await usuariosService.listarMaterias();
+        track(cid, `${materias.length} materias encontradas.`);
+        res.status(200).json(materias);
+    } catch (error) {
+        track(cid, `Error listando materias: ${error.message}`, 'ERROR');
+        next(error);
+    }
+};
+
 module.exports = {
     obtenerEstudiante,
     obtenerTutor,
-    listarTutores
+    listarTutores,
+    listarMaterias
 };

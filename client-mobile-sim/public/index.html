@@ -378,17 +378,28 @@
                 const tutores = await response.json();
                 if (!response.ok) throw new Error(tutores.error?.message || 'Error desconocido');
 
-                if (!tutores.length) {
+                // Deuda #14 resuelta: un tutor ya no tiene una unica `especialidad`, sino
+                // `materias: string[]` (catalogo real + relacion N:M). Cada par (tutor, materia)
+                // es su propia opcion -- un tutor con 2 materias aparece 2 veces en el desplegable,
+                // una por cada una. Si el tutor todavia no tiene materias cargadas, se muestra un
+                // placeholder deshabilitado en vez de ocultar al tutor por completo.
+                const opciones = tutores.flatMap((t) => {
+                    const nombre = t.nombrecompleto || t.nombreCompleto || t.id;
+                    const materias = (t.materias && t.materias.length) ? t.materias : [null];
+                    return materias.map((materia) => ({ id: t.id, nombre, materia }));
+                });
+
+                if (!opciones.length) {
                     // Lista vacía no es un error: ms-usuarios devuelve [] cuando no hay tutores
                     // cargados. Se distingue de un fallo de red, que cae en el catch.
                     selectTutor.innerHTML = '<option value="">No hay tutores cargados</option>';
                     return;
                 }
 
-                selectTutor.innerHTML = tutores.map((t, i) => {
-                    const nombre = t.nombrecompleto || t.nombreCompleto || t.id;
-                    const materia = t.especialidad || 'sin especialidad';
-                    return `<option value="${i}" data-idtutor="${escapeHtml(t.id)}" data-materia="${escapeHtml(t.especialidad || '')}">${escapeHtml(nombre)} — ${escapeHtml(materia)}</option>`;
+                selectTutor.innerHTML = opciones.map((o, i) => {
+                    const etiquetaMateria = o.materia || 'sin materia asignada';
+                    const disabledAttr = o.materia ? '' : 'disabled';
+                    return `<option value="${i}" data-idtutor="${escapeHtml(o.id)}" data-materia="${escapeHtml(o.materia || '')}" ${disabledAttr}>${escapeHtml(o.nombre)} — ${escapeHtml(etiquetaMateria)}</option>`;
                 }).join('');
                 sincronizarCamposOcultos();
             } catch (error) {

@@ -15,4 +15,8 @@ router.get('/estudiantes/:id', verifyTokenMiddleware, usuariosController.obtener
 router.get('/tutores', verifyTokenMiddleware, usuariosController.listarTutores);
 router.get('/tutores/:id', verifyTokenMiddleware, usuariosController.obtenerTutor);
 
+// Catálogo de materias (deuda #14): expone de dónde poblar un <select> de materias en el cliente,
+// que antes no existía porque `especialidad` era texto libre sin catálogo.
+router.get('/materias', verifyTokenMiddleware, usuariosController.listarMaterias);
+
 module.exports = router;
