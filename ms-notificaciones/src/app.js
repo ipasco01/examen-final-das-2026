@@ -15,6 +15,13 @@ const promBundle = require("express-prom-bundle");
 
 const RABBITMQ_RETRY_DELAY_MS = 5000;
 
+// David: SE AGREGA. Cuántas veces se reintenta un mensaje antes de darlo
+// por perdido y mandarlo a la DLQ. Es una variable de entorno (no un
+// número fijo en el código) para poder ajustarla sin tener que redesplegar,
+// igual que hicieron en tutoria.service.js con COMPENSACION_AGENDA_MAX_INTENTOS.
+const MAX_REINTENTOS = Number(process.env.NOTIFICACIONES_MAX_REINTENTOS || 3);
+
+
 const app = express();
 
 app.use(helmet());
@@ -86,21 +93,78 @@ const startConsumer = async () => {
                 } catch (error) {
                     const rawMessage = msg.content.toString();
                     console.error(`[MS_Notificaciones] Error al procesar mensaje: ${error.message}`, payload || rawMessage);
-                    // 4. Rechazar (nack) el mensaje. false = no volver a encolar.
-                    // RabbitMQ lo enviará a la DLQ configurada en la cola principal.
-                    channel.nack(msg, false, false);
-                    console.log(`[MS_Notificaciones] Mensaje rechazado (nack) y enviado a DLQ: ${dlqName}.`);
+                    
+
+
+                    const esErrorDeValidacion = error.statusCode === 400;
+                    const reintentosPrevios =
+                        (msg.properties.headers && msg.properties.headers['x-reintentos']) || 0;
+
+                    if (esErrorDeValidacion || reintentosPrevios >= MAX_REINTENTOS) {
+                        channel.nack(msg, false, false);
+                        console.log(
+                            `[MS_Notificaciones] Mensaje descartado a DLQ (${dlqName}). ` +
+                            `Motivo: ${esErrorDeValidacion ? 'error de validación' : 'reintentos agotados'} ` +
+                            `(reintentos previos: ${reintentosPrevios}).`
+                        );
+                    } else {
+                        // David: confirmamos (ack) el mensaje viejo y publicamos
+                        // uno NUEVO con el contador de reintentos incrementado.
+                        // No es "reenviar la misma carta" -- es "escribir la
+                        // misma carta de nuevo, pero anotando en la esquina
+                        // 'este es el intento número 2'".
+                        channel.ack(msg);
+                        channel.sendToQueue(queueName, msg.content, {
+                            persistent: true,
+                            headers: { 'x-reintentos': reintentosPrevios + 1 }
+                        });
+                        console.log(
+                            `[MS_Notificaciones] Mensaje reencolado para reintento ` +
+                            `${reintentosPrevios + 1}/${MAX_REINTENTOS}.`
+                        ); 
+                    }
                 }
             }
+        }, { noAck: false });
+    
+    
+        // Consumidor de la DLQ (ya resuelto en una iteración anterior).
+        channel.consume(dlqName, (msg) => {
+            if (msg !== null) {
+                const rawMessage = msg.content.toString();
+                let payload;
+                try {
+                    payload = JSON.parse(rawMessage);
+                } catch {
+                    payload = null;
+                }
+
+                const cid = payload?.correlationId || 'N/A';
+
+                console.error(
+                    `[MS_Notificaciones][DLQ] Mensaje en dead-letter (${dlqName}). CID: ${cid}`,
+                    payload || rawMessage
+                );
+
+                messageProducer.track(
+                    cid,
+                    `Mensaje enviado a DLQ (${dlqName}): requiere revisión manual`,
+                    'ERROR'
+                );
+
+                channel.ack(msg);
+            }
         }, {
-            noAck: false // Importante: Requerimos confirmación manual (ack/nack)
+            noAck: false
         });
 
     } catch (error) {
         console.error('[MS_Notificaciones] Error al conectar/consumir de RabbitMQ:', error.message);
-        setTimeout(startConsumer, RABBITMQ_RETRY_DELAY_MS); // Reintentar conexión en 5 segundos
+        setTimeout(startConsumer, RABBITMQ_RETRY_DELAY_MS);
     }
 };
+
+
 
 if (require.main === module) {
     // Iniciar el servidor y el consumidor de RabbitMQ
