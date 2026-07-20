@@ -136,7 +136,9 @@
 
             const entry = document.createElement('div');
             entry.className = 'payload-entry';
-            const claseCabecera = esError ? 'cabecera-ERROR' : `cabecera-${escapeHtml(etiqueta)}`;
+            // La etiqueta puede traer un sufijo (ej. "REPROGRAMAR envío"), pero la clase CSS
+            // de color se basa solo en la primera palabra para reusar los estilos existentes.
+            const claseCabecera = esError ? 'cabecera-ERROR' : `cabecera-${escapeHtml(etiqueta.split(' ')[0])}`;
             const hora = new Intl.DateTimeFormat('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date());
             entry.innerHTML = `
                 <div class="cabecera ${claseCabecera}">
@@ -231,21 +233,26 @@
             botonEl.disabled = true;
             botonEl.textContent = 'Reprogramando...';
 
+            const bodyReprogramar = { username, password, nuevaFecha, duracionMinutos: 60 };
+            // Mostramos el payload que se envía (el "modificar horario") antes de la respuesta,
+            // para que en la demo se vea la solicitud completa y no solo el resultado.
+            registrarPayload('REPROGRAMAR envío', bodyReprogramar);
+
             try {
                 const response = await fetch(`/api/tutorias/${encodeURIComponent(tutoria.idTutoria)}/reprogramar`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password, nuevaFecha, duracionMinutos: 60 })
+                    body: JSON.stringify(bodyReprogramar)
                 });
 
                 const resultado = await response.json();
 
                 if (!response.ok) {
-                    registrarPayload('REPROGRAMAR', resultado, true);
+                    registrarPayload('REPROGRAMAR respuesta', resultado, true);
                     throw new Error(resultado.error ? JSON.stringify(resultado.error) : 'Error desconocido');
                 }
 
-                registrarPayload('REPROGRAMAR', resultado);
+                registrarPayload('REPROGRAMAR respuesta', resultado);
                 // La reprogramación cambia la fecha (y puede cambiar el idBloqueo) de la tutoría:
                 // refrescamos la lista de una vez, mismo criterio que cancelarTutoria.
                 await cargarTutorias();
