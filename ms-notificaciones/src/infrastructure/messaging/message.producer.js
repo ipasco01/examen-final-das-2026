@@ -17,13 +17,23 @@ const connect = async () => {
     }
 };
 
+// David: MISMO ARREGLO que se hizo en ms-tutorias (D1). Antes, si el canal
+// no estaba listo, esta función hacía "return" en silencio -- el evento de
+// tracking simplemente desaparecía, sin log, sin aviso. Ahora se anota en
+// consola (console.warn) y se retorna true/false para que quien la llame
+// (track(), justo abajo) también pueda saber si de verdad se publicó.
 const publishTrackingEvent = async (payload) => {
-    if (!channel) { return; }
+    if (!channel) {
+        console.warn('[MS_Notificaciones] No se pudo publicar evento de tracking: canal RabbitMQ no disponible.');
+        return false;
+    }
     try {
         const messageBuffer = Buffer.from(JSON.stringify(payload));
         channel.publish(EXCHANGE_NAME, '', messageBuffer);
+        return true;
     } catch (error) {
-        console.error(`[MS_Notificaciones] Error al publicar evento de tracking:`, error.message);
+        console.error('[MS_Notificaciones] Error al publicar evento de tracking:', error.message);
+        return false;
     }
 };
 

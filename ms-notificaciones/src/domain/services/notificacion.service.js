@@ -3,6 +3,13 @@ const { randomUUID } = require('crypto');
 const emailProvider = require('../../infrastructure/providers/email.provider');
 const { track } = require('../../infrastructure/messaging/message.producer'); // <-- IMPORTAR TRACK
 
+// David: ESTA LÍNEA FALTABA. El código ya usaba "logNotificacionRepository"
+// más abajo (en enviarEmailNotificacion) pero nadie lo había importado --
+// eso rompía el servicio con "ReferenceError: logNotificacionRepository is
+// not defined" en cuanto llegaba el primer mensaje real.
+
+const logNotificacionRepository = require('../../infrastructure/repositories/logNotificacion.repository'); // <-- IMPORTAR REPOSITORY
+
 const enviarNotificacion = async (canal, datosNotificacion) => {
     const { destinatario, asunto, cuerpo } = datosNotificacion;
 
@@ -41,42 +48,57 @@ const enviarNotificacion = async (canal, datosNotificacion) => {
     return log;
 };
 
-// Simplificamos: este servicio ahora solo sabe enviar emails basado en el payload
+// David: enviarEmailNotificacion (la que usa el consumidor de RabbitMQ en
+// app.js) ahora sí puede usar logNotificacionRepository porque ya está
+// importado arriba. La lógica de deduplicación que ya estaba escrita aquí
+// abajo ahora funciona de verdad.
 const enviarEmailNotificacion = async (payloadNotificacion) => {
     const { destinatario, asunto, cuerpo, correlationId } = payloadNotificacion;
-    const cid = correlationId || randomUUID(); // Asegurar que tenemos un CID
-
+    const cid = correlationId || randomUUID();
+ 
+    // David: pregunta de deduplicación -- "¿ya mandé esta carta antes?"
+    // Esto resuelve el Crítico D4: si RabbitMQ reentrega el mismo mensaje
+    // (algo normal en su garantía de "al menos una entrega"), no se manda
+    // el correo dos veces.
+    const yaEnviado = await logNotificacionRepository.existsByCorrelationId(cid);
+    if (yaEnviado) {
+        track(cid, `Email ya fue enviado previamente para este correlationId (${cid}). Omitiendo reenvío duplicado.`);
+        return { logId: null, canal: 'email', destinatario, estado: 'DUPLICADO_OMITIDO', correlationId: cid };
+    }
+ 
     try {
-
         track(cid, `Procesando email para: ${destinatario}`);
-        // Log con el CID
-        console.log(`[MS_Notificaciones Service] - CID: ${correlationId || 'N/A'} - Procesando email para: ${destinatario}`);
-
+ 
         if (!destinatario || !asunto || !cuerpo) {
             const error = new Error('Datos incompletos para enviar email: se necesita destinatario, asunto y cuerpo.');
-            error.statusCode = 400; // Bad Request
-            throw new Error('Datos incompletos para enviar email');
+            error.statusCode = 400;
+            throw error;
         }
-
+ 
         const resultadoEnvio = await emailProvider.enviarEmail(destinatario, asunto, cuerpo);
-        
-
+ 
         const log = {
             logId: randomUUID(),
             canal: 'email',
-            destinatario: destinatario,
+            destinatario,
             timestamp: new Date().toISOString(),
             estado: resultadoEnvio.estado,
-            correlationId: correlationId
+            correlationId: cid
         };
-
+ 
+        // David: se persiste en la base de datos ANTES de que app.js haga
+        // el ack. Así, si el proceso se cayera justo después de enviar el
+        // email pero antes del ack, y RabbitMQ reentregara el mensaje, el
+        // chequeo de arriba (existsByCorrelationId) ya lo va a encontrar y
+        // no se reenviará el correo.
+        await logNotificacionRepository.save(log);
+ 
         track(cid, `Email simulado enviado a: ${destinatario}`);
-        console.log(`[MS_Notificaciones Service] - CID: ${correlationId || 'N/A'} - Email simulado. Log:`, JSON.stringify(log));
         return log;
-
+ 
     } catch (error) {
         track(cid, `Error al enviar email: ${error.message}`, 'ERROR');
-        throw error; // El consumidor (en app.js) manejará el nack()
+        throw error;
     }
 };
 
