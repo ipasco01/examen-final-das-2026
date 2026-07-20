@@ -218,6 +218,7 @@ services:
       - DB_PASSWORD=${TUTORIAS_DB_PASSWORD:?Definí TUTORIAS_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_tutorias
       - SERVICE_NAME=MS_Tutorias
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
     depends_on:
       ms-auth:
@@ -379,6 +380,9 @@ services:
       start_period: 10s
 
   # --- MONITORIZACIÓN ---
+<<<<<<< HEAD
+  
+=======
   tempo:
     # Equipo 5: healthcheck agregado tras VERIFICAR que la imagen tiene shell y wget
     #   docker run --rm --entrypoint sh grafana/tempo:2.5.0 -c 'command -v wget'  -> /usr/bin/wget
@@ -419,7 +423,9 @@ services:
       - "4317:4317"
       - "4318:4318"
     depends_on:
-      - tempo
+      tempo:
+        condition: service_healthy
+>>>>>>> 1d9138ac822dc56a0a5e774446816a10c0e55e3a
   prometheus:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
@@ -515,8 +521,8 @@ services:
       - ./promtail-config.yaml:/etc/promtail/config.yml:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:
-      loki:
-        condition: service_healthy
+<<<<<<< HEAD
+      - loki
 
   # --- Trazas distribuidas (OTel Collector + Tempo) ---
   otel-collector:
@@ -541,6 +547,10 @@ services:
       - tempo_data:/tmp/tempo
     ports:
       - "3200:3200" # API HTTP: Grafana consulta las trazas acá
+=======
+      loki:
+        condition: service_healthy
+>>>>>>> 1d9138ac822dc56a0a5e774446816a10c0e55e3a
 
 # --- Definición de Volúmenes ---
 volumes:
