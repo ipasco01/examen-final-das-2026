@@ -4,6 +4,7 @@ const CircuitBreaker = require('opossum');
 const { agendaServiceUrl } = require('../../config');
 const { publishTrackingEvent } = require('../messaging/message.producer');
 const { conReintentos } = require('./retry.util');
+const { circuitBreakerState } = require('../observability/circuitBreaker.metrics');
 
 // Reintentos con backoff exponencial + jitter ante caídas puntuales de ms-agenda (contenedor
 // reiniciando, blip de red) -- ver retry.util.js. Aplican a verificarDisponibilidad y
@@ -41,9 +42,22 @@ const _makeRequest = async (method, url, correlationId, data, authHeader) => {
 // ese retry a fallos sintéticos 503 casi instantáneos si el circuito quedara abierto.
 const breaker = new CircuitBreaker(_makeRequest, breakerOptions);
 
-breaker.on('open', () => console.log('[CircuitBreaker] ABIERTO: ms-agenda no responde.'));
-breaker.on('halfOpen', () => console.log('[CircuitBreaker] HALF-OPEN: Probando recuperación (ms-agenda)...'));
-breaker.on('close', () => console.log('[CircuitBreaker] CERRADO: ms-agenda recuperado.'));
+// Arranca en 0 (cerrado) desde el primer instante -- si no se hace este set inicial,
+// la métrica ni siquiera existe en /metrics hasta el primer cambio de estado real.
+circuitBreakerState.set({ target_service: 'ms-agenda' }, 0);
+
+breaker.on('open', () => {
+    console.log('[CircuitBreaker] ABIERTO: ms-agenda no responde.');
+    circuitBreakerState.set({ target_service: 'ms-agenda' }, 1);
+});
+breaker.on('halfOpen', () => {
+    console.log('[CircuitBreaker] HALF-OPEN: Probando recuperación (ms-agenda)...');
+    circuitBreakerState.set({ target_service: 'ms-agenda' }, 0.5);
+});
+breaker.on('close', () => {
+    console.log('[CircuitBreaker] CERRADO: ms-agenda recuperado.');
+    circuitBreakerState.set({ target_service: 'ms-agenda' }, 0);
+});
 
 const reportOpenCircuit = async (correlationId) => {
     await publishTrackingEvent({
