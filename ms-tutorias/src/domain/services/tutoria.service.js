@@ -4,6 +4,7 @@ const usuariosClient = require('../../infrastructure/clients/usuarios.client');
 const agendaClient = require('../../infrastructure/clients/agenda.client');
 const { publishTrackingEvent } = require('../../infrastructure/messaging/message.producer');
 const { compensacionFallidaTotal } = require('../../infrastructure/observability/compensacion.metrics');
+const { delayConJitter } = require('../../infrastructure/clients/retry.util');
 
 // Función helper para publicar tracking
 const track = (cid, message, status = 'INFO', idempotencyKey) => {
@@ -170,7 +171,7 @@ const ejecutarSagaSolicitudTutoria = async (datosSolicitud, correlationId, optio
                     ultimoErrorCompensacion = compError;
                     trackCid(`Intento ${intento}/${COMPENSACION_MAX_INTENTOS} de compensación de agenda falló: ${compError.message}`, 'ERROR');
                     if (intento < COMPENSACION_MAX_INTENTOS) {
-                        await sleep(COMPENSACION_BASE_DELAY_MS * intento);
+                        await sleep(delayConJitter(intento, COMPENSACION_BASE_DELAY_MS));
                     }
                 }
             }
@@ -290,7 +291,7 @@ const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, co
                 ultimoError = err;
                 trackCid(`Intento ${intento}/${COMPENSACION_MAX_INTENTOS} de liberar el horario falló: ${err.message}`, 'ERROR');
                 if (intento < COMPENSACION_MAX_INTENTOS) {
-                    await sleep(COMPENSACION_BASE_DELAY_MS * intento);
+                    await sleep(delayConJitter(intento, COMPENSACION_BASE_DELAY_MS));
                 }
             }
         }
