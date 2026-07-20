@@ -29,6 +29,7 @@
         .tutoria-card .motivo { color: #b71c1c; font-size: 0.85rem; margin-top: 0.25rem; }
         .tutoria-card .fila-top { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
         .tutoria-card .fecha { color: #555; font-size: 0.9rem; margin-top: 0.15rem; }
+        .hint { display: block; margin-top: 0.3rem; color: #666; font-size: 0.8rem; font-family: monospace; }
         .cancelar-btn { background: none; border: 1px solid #b71c1c; color: #b71c1c; padding: 0.3rem 0.6rem; font-size: 0.8rem; font-weight: 600; border-radius: 4px; }
         .cancelar-btn:hover { background: #b71c1c; color: white; }
         .cancelar-btn:disabled { opacity: 0.5; cursor: default; }
@@ -71,16 +72,31 @@
                 <fieldset>
                     <legend><strong>2. Datos de la Tutoría</strong></legend>
                     <div class="form-group">
-                        <label for="idTutor">ID del Tutor:</label>
-                        <input type="text" id="idTutor" name="idTutor" value="t09876" required>
+                        <!-- UN solo control para tutor Y materia, en vez de dos campos de texto.
+                             En este modelo elegir una materia ES elegir un tutor: `especialidad` es
+                             una columna de `tutores` y cada tutor tiene exactamente una. Pedirlos por
+                             separado era pedir el mismo dato dos veces, y permitia contradecirse
+                             (solicitar "Física Cuántica" a una tutora de Cálculo). Con un desplegable
+                             de pares la incoherencia no se puede ni expresar.
+                             Se puebla desde GET /usuarios/tutores; los <option> NO estan escritos aca. -->
+                        <label for="tutorMateria">Tutor y materia:</label>
+                        <select id="tutorMateria" required>
+                            <option value="">Cargando tutores...</option>
+                        </select>
+                        <small id="tutor-hint" class="hint">&nbsp;</small>
+                        <!-- El backend sigue recibiendo idTutor y materia por separado: el selector es
+                             una mejora de la UI, no un cambio del contrato de la API. -->
+                        <input type="hidden" id="idTutor" name="idTutor">
+                        <input type="hidden" id="materia" name="materia">
                     </div>
                     <div class="form-group">
-                        <label for="fecha">Fecha y Hora (ISO 8601):</label>
-                        <input type="text" id="fecha" name="fecha" value="2025-12-20T10:00:00Z" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="materia">Materia:</label>
-                        <input type="text" id="materia" name="materia" value="Física Cuántica" required>
+                        <label for="fecha">Fecha y Hora (tu hora local):</label>
+                        <!-- datetime-local muestra la hora del usuario, pero NO lleva zona horaria:
+                             devuelve "2026-12-20T10:00" a secas. Por eso se convierte a UTC antes de
+                             enviar (ver el submit handler) y se muestra abajo el ISO 8601 resultante:
+                             el simulador sigue siendo un inspector de payloads, no se oculta lo que viaja. -->
+                        <input type="datetime-local" id="fecha" name="fecha" required>
+                        <small id="fecha-utc" class="hint">&nbsp;</small>
                     </div>
                      <div class="form-group">
                         <label for="duracion">Duración (minutos):</label>
@@ -296,6 +312,94 @@
 
         listarBtn.addEventListener('click', cargarTutorias);
 
+        // --- Fecha: hora local en la UI, UTC en el cable -------------------------------
+        //
+        // El valor por defecto se CALCULA (hoy + 7 dias), no se escribe a mano. La version
+        // anterior tenia "2025-12-20T10:00:00Z" fijo en el HTML: la demo caducaba sola y el
+        // primer intento devolvia un 400 "debe ser una fecha futura", como si el sistema
+        // estuviera roto cuando la validacion funcionaba perfecto.
+        const fechaInput = document.getElementById('fecha');
+        const fechaUtcHint = document.getElementById('fecha-utc');
+
+        // datetime-local necesita "YYYY-MM-DDTHH:mm" en HORA LOCAL. toISOString() daria UTC,
+        // que es justo lo que no va aca: restamos el offset para compensar.
+        const aValorLocal = (fecha) => {
+            const local = new Date(fecha.getTime() - fecha.getTimezoneOffset() * 60000);
+            return local.toISOString().slice(0, 16);
+        };
+
+        const enUnaSemana = new Date();
+        enUnaSemana.setDate(enUnaSemana.getDate() + 7);
+        enUnaSemana.setMinutes(0, 0, 0);
+        fechaInput.value = aValorLocal(enUnaSemana);
+
+        // No se acepta agendar en el pasado: el navegador ya lo bloquea en el selector, asi
+        // el usuario no llega siquiera a mandar la peticion que ms-tutorias rechazaria.
+        fechaInput.min = aValorLocal(new Date());
+
+        // La conversion queda a la vista. Sin esto el simulador dejaria de mostrar lo que
+        // realmente se envia, que es su unica razon de existir.
+        const refrescarHintUtc = () => {
+            if (!fechaInput.value) { fechaUtcHint.textContent = ' '; return; }
+            const utc = new Date(fechaInput.value).toISOString();
+            fechaUtcHint.textContent = `se envia como: ${utc}  (UTC)`;
+        };
+        fechaInput.addEventListener('input', refrescarHintUtc);
+        refrescarHintUtc();
+
+        // --- Catálogo de tutores -------------------------------------------------------
+        //
+        // Las opciones se piden a ms-usuarios, NO están escritas en este archivo. Es la diferencia
+        // que importa: una lista hardcodeada se desincroniza en cuanto alguien siembra un tutor
+        // nuevo, igual que la fecha "2025-12-20" que traía este formulario y que caducó sola.
+        const selectTutor = document.getElementById('tutorMateria');
+        const tutorHint = document.getElementById('tutor-hint');
+        const idTutorHidden = document.getElementById('idTutor');
+        const materiaHidden = document.getElementById('materia');
+
+        const sincronizarCamposOcultos = () => {
+            const opcion = selectTutor.selectedOptions[0];
+            idTutorHidden.value = opcion?.dataset.idtutor || '';
+            materiaHidden.value = opcion?.dataset.materia || '';
+            tutorHint.textContent = idTutorHidden.value
+                ? `se envía como: idTutor="${idTutorHidden.value}", materia="${materiaHidden.value}"`
+                : ' ';
+        };
+
+        const cargarTutores = async () => {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            try {
+                const response = await fetch('/api/tutores', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const tutores = await response.json();
+                if (!response.ok) throw new Error(tutores.error?.message || 'Error desconocido');
+
+                if (!tutores.length) {
+                    // Lista vacía no es un error: ms-usuarios devuelve [] cuando no hay tutores
+                    // cargados. Se distingue de un fallo de red, que cae en el catch.
+                    selectTutor.innerHTML = '<option value="">No hay tutores cargados</option>';
+                    return;
+                }
+
+                selectTutor.innerHTML = tutores.map((t, i) => {
+                    const nombre = t.nombrecompleto || t.nombreCompleto || t.id;
+                    const materia = t.especialidad || 'sin especialidad';
+                    return `<option value="${i}" data-idtutor="${escapeHtml(t.id)}" data-materia="${escapeHtml(t.especialidad || '')}">${escapeHtml(nombre)} — ${escapeHtml(materia)}</option>`;
+                }).join('');
+                sincronizarCamposOcultos();
+            } catch (error) {
+                selectTutor.innerHTML = `<option value="">No se pudo cargar el catálogo</option>`;
+                registrarPayload('TUTORES', `Error: ${error.message}`, true);
+            }
+        };
+
+        selectTutor.addEventListener('change', sincronizarCamposOcultos);
+        cargarTutores();
+
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -303,6 +407,14 @@
 
             const formData = new FormData(form);
             const data = Object.fromEntries(formData.entries());
+
+            // El input entrega hora local SIN zona ("2026-12-20T10:00"). new Date() la interpreta
+            // como local y toISOString() la normaliza a UTC con la Z explicita. Este es el punto
+            // exacto donde se elimina la ambiguedad: a partir de aca, estudiante, tutor, ms-agenda
+            // y la base hablan todos del mismo instante, sin importar en que huso este cada uno.
+            data.fecha = new Date(data.fecha).toISOString();
+            registrarPayload('SOLICITAR envio', data);
+
             let payloadYaRegistrado = false;
 
             try {

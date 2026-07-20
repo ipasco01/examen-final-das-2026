@@ -1,6 +1,6 @@
 // client-mobile-sim/src/api_client/backend.client.js
 const axios = require('axios');
-const { apiBaseUrl, authServiceUrl } = require('../config'); // <-- Importar la nueva URL
+const { apiBaseUrl, authServiceUrl, usuariosServiceUrl } = require('../config'); // <-- Importar la nueva URL
 
 // --- NUEVA FUNCIÓN DE LOGIN ---
 const login = async (username, password) => {
@@ -72,4 +72,18 @@ const reprogramarTutoria = async (idTutoria, nuevaFecha, duracionMinutos, token,
     return response.data;
 };
 
-module.exports = { login, solicitarTutoria, listarTutorias, cancelarTutoria, reprogramarTutoria };
+// Catalogo de tutores para el desplegable. Va directo a ms-usuarios, no por el orquestador.
+const listarTutores = async (token, correlationId) => {
+    const url = `${usuariosServiceUrl}/tutores`;
+    console.log(`[CLIENT] ---> GET ${url} | Correlation-ID: ${correlationId}`);
+
+    const response = await axios.get(url, {
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'X-Correlation-ID': correlationId
+        }
+    });
+    return response.data;
+};
+
+module.exports = { login, solicitarTutoria, listarTutorias, cancelarTutoria, reprogramarTutoria, listarTutores };

@@ -38,6 +38,28 @@ app.post('/api/solicitar', async (req, res) => {
     }
 });
 
+// Catálogo de tutores para el desplegable del formulario. Necesita credenciales porque
+// GET /usuarios/tutores está detrás del jwt.middleware de ms-usuarios, igual que el resto de
+// sus rutas: listar el catálogo no es información pública.
+app.post('/api/tutores', async (req, res) => {
+    console.log(`[API] Recibida solicitud POST en /api/tutores`);
+    try {
+        const { v4: uuidv4 } = require('uuid');
+        const backendClient = require('./src/api_client/backend.client');
+        const { username, password } = req.body;
+        const token = await backendClient.login(username, password);
+        const tutores = await backendClient.listarTutores(token, uuidv4());
+        res.status(200).json(tutores);
+    } catch (error) {
+        console.error(`[API] Error en /api/tutores: ${error.message}`);
+        if (error.response) {
+            res.status(error.response.status).json({ error: error.response.data.error || 'Error del backend' });
+        } else {
+            res.status(500).json({ error: { message: error.message } });
+        }
+    }
+});
+
 // Endpoint de API para listar las tutorías del estudiante autenticado ("ver mis tutorías")
 app.post('/api/tutorias/listar', async (req, res) => {
     console.log(`[API] Recibida solicitud POST en /api/tutorias/listar`);

@@ -309,6 +309,12 @@ services:
       - "8080:8080"
     environment:
       - PORT=8080
+      # Tercera URL del simulador, la unica que NO pasa por el orquestador: alimenta el desplegable
+      # de tutor+materia contra GET /usuarios/tutores. Hasta ahora el cliente solo hablaba con
+      # ms-auth (token) y ms-tutorias (todo lo demas), asi que esto agrega una dependencia nueva.
+      # Es aceptable porque es una lectura de catalogo y no un paso de la Saga: si ms-usuarios no
+      # responde, el selector queda vacio pero solicitar/cancelar/reprogramar siguen funcionando.
+      - USUARIOS_SERVICE_URL=http://ms-usuarios:3001/usuarios
       # URLs que apuntan a los nombres de servicio de Docker Compose
       - API_BASE_URL=http://ms-tutorias:3000
       - AUTH_SERVICE_URL=http://ms-auth:4000/auth
