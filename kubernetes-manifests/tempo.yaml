@@ -1,0 +1,143 @@
+# kubernetes-manifests/tempo.yaml
+#
+# Equipo 5 (Deployment) — deuda #12 y parte de #1: portar el pipeline de trazas a Kubernetes.
+#
+# POR QUE HACIA FALTA. Los 5 microservicios estan instrumentados con OpenTelemetry desde el merge
+# `f48911e` del Equipo 4, y `tracing.js` exporta a `http://otel-collector:4317` por defecto. En el
+# cluster ese nombre no resolvia: no habia ni collector ni Tempo. El exportador reintentaba en
+# silencio y no habia una sola traza. No rompia nada, y por eso paso desapercibido -- es la forma
+# tipica de este proyecto: algo que funciona en un entorno y no en el otro, sin sintoma visible.
+#
+# EL SERVICE SE LLAMA `tempo`, NO `tempo-service`, y es deliberado aunque rompa la convencion de
+# nombres del resto de mis manifiestos. `otel-collector-config.yaml` (archivo del Equipo 4) apunta
+# a `endpoint: tempo:4317`. Si el Service se llamara distinto habria que forkear esa config: una
+# version para compose y otra para K8s. **Dos copias de la misma configuracion es exactamente la
+# fuente de drift que este PR viene combatiendo.** Prefiero adaptar el nombre del Service --que es
+# mio-- antes que duplicar un archivo ajeno.
+#
+# StatefulSet y no Deployment: Tempo escribe bloques de trazas y un WAL en disco. Con un volumen
+# efimero, cada reinicio del pod tira las trazas y el WAL a medio escribir.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+data:
+  # Contenido IDENTICO a ./tempo.yaml de la raiz del repo. Si alguien edita ese archivo, hay que
+  # reflejarlo aca -- es el precio de no tener todavia un paso de build que los sincronice, y queda
+  # anotado como deuda. Verificable:  diff <(kubectl get cm tempo-config -o jsonpath='{.data.tempo\.yaml}') tempo.yaml
+  tempo.yaml: |
+    server:
+      http_listen_port: 3200
+
+    distributor:
+      receivers:
+        # Tempo puede recibir spans directamente, pero acá los va a recibir
+        # SIEMPRE desde el otel-collector, no de los microservicios directo
+        otlp:
+          protocols:
+            http:
+            grpc:
+
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /tmp/tempo/traces
+        wal:
+          path: /tmp/tempo/wal
+
+    compactor:
+      compaction:
+        block_retention: 48h # no necesitas guardar trazas más que un par de días para la demo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo # NO 'tempo-service': ver la nota de arriba sobre la config del Equipo 4
+spec:
+  selector:
+    app: tempo
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3200
+      targetPort: 3200
+    - name: otlp-grpc
+      protocol: TCP
+      port: 4317
+      targetPort: 4317
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo
+spec:
+  serviceName: tempo
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tempo
+  template:
+    metadata:
+      labels:
+        app: tempo
+    spec:
+      containers:
+        - name: tempo
+          image: grafana/tempo:2.5.0 # Misma version fijada que en docker-compose.yml
+          args: ["-config.file=/etc/tempo.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 3200
+            - name: otlp-grpc
+              containerPort: 4317
+          # `/ready` es el mismo endpoint que usa el healthcheck de compose. La diferencia esta en
+          # QUIEN lo consulta: aca lo hace el kubelet desde fuera del contenedor, en compose hay que
+          # tener `wget` adentro. Tempo lo tiene, asi que en los dos entornos se verifica lo mismo.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3200
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 3200
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tempo.yaml
+              subPath: tempo.yaml
+              readOnly: true
+            - name: tempo-data
+              mountPath: /tmp/tempo
+      volumes:
+        - name: config
+          configMap:
+            name: tempo-config
+  volumeClaimTemplates:
+    - metadata:
+        name: tempo-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

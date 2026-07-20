@@ -45,6 +45,17 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+              # Equipo 5 (20/07). Mismo caso que los 5 StatefulSets de Postgres: el endurecimiento
+              # D4 se commiteo el 19/07 15:04 y el cluster no se volvio a aplicar hasta hoy, asi
+              # que estuvo un dia entero roto sin que nadie lo viera.
+              #
+              # Aca el sintoma fue distinto y por eso se verifico aparte en vez de asumir que era
+              # identico:  su-exec: setgroups: Operation not permitted
+              # El entrypoint arranca como root, prepara /var/lib/rabbitmq y baja a usuario
+              # rabbitmq con su-exec. `setgroups` es la llamada que fija los grupos suplementarios
+              # al cambiar de usuario, y necesita CAP_SETGID. Postgres fallaba antes, en el chmod;
+              # RabbitMQ llega un paso mas lejos y falla en el cambio de usuario.
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
 
           ports:
             - containerPort: 5672

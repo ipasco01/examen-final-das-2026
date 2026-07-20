@@ -1,0 +1,153 @@
+# kubernetes-manifests/otel-collector.yaml
+#
+# Equipo 5 (Deployment) — deuda #12: el eslabon que faltaba entre los microservicios y Tempo.
+#
+# EL SERVICE SE LLAMA `otel-collector` a proposito, igual que en compose. `tracing.js` de los 5
+# microservicios cae a `http://otel-collector:4317` cuando no hay variable, asi que con este nombre
+# el DNS del cluster resuelve exactamente igual que el de compose. Aun asi, en los Deployments la
+# variable se declara EXPLICITAMENTE (ver ms-*.yaml): depender de un default que casualmente
+# coincide es como no declarar `restart` y confiar en que nadie reinicie el host.
+#
+# Deployment y no StatefulSet: el collector no guarda nada. Los spans entran, se procesan en el
+# batch processor y salen a Tempo. Si el pod muere se pierde a lo sumo un batch de 5s, que es una
+# perdida aceptable para telemetria -- distinto de una base, donde perder un batch es perder datos
+# del negocio.
+#
+# SOBRE LA PROBE: `tcpSocket`, no `httpGet`.
+# La extension `health_check` (puerto 13133) esta pedida al Equipo 4 pero todavia no activada en su
+# config. Sin ella no hay endpoint HTTP que consultar, asi que se verifica que el puerto OTLP este
+# aceptando conexiones. Es mas debil --confirma que escucha, no que el pipeline hacia Tempo
+# funcione-- y por eso queda anotado: cuando activen la extension, esto pasa a
+# `httpGet: /  port: 13133`.
+#
+# Lo importante del caso: en compose este servicio NO PUEDE tener healthcheck (imagen sin shell,
+# subcomandos de /otelcol-contrib todos offline -- comprobado con tres `docker exec`). En K8s si,
+# porque la probe la ejecuta el kubelet desde afuera. **El mismo servicio, la misma imagen, y una
+# plataforma puede verificarlo y la otra no.** Es la tesis de esta zona en su forma mas limpia.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  # Contenido IDENTICO a ./otel-collector-config.yaml de la raiz. Archivo del Equipo 4: define su
+  # pipeline de observabilidad y no se toca desde aca, solo se transporta.
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_mib: 400
+        spike_limit_mib: 100
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+      resource:
+        attributes:
+          - key: deployment.environment
+            value: "development"
+            action: upsert
+
+    exporters:
+      otlp/tempo:
+        endpoint: tempo:4317
+        tls:
+          insecure: true
+      debug:
+        verbosity: basic
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [otlp/tempo, debug]
+      telemetry:
+        logs:
+          level: info
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector # mismo nombre que en compose: el default de tracing.js resuelve igual
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      protocol: TCP
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      protocol: TCP
+      port: 4318
+      targetPort: 4318
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.108.0 # misma version que en compose
+          args: ["--config=/etc/otel-collector-config.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          readinessProbe:
+            tcpSocket:
+              port: 4317
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 4317
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # `limit_mib: 400` del memory_limiter tiene que quedar POR DEBAJO del limite del
+          # contenedor, o el kernel mata el proceso (OOMKill) antes de que el propio collector
+          # pueda aplicar su politica de descarte. El memory_limiter existe justamente para
+          # degradar de forma controlada en vez de morir de golpe.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel-collector-config.yaml
+              subPath: otel-collector-config.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config

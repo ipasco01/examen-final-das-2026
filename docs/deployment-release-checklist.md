@@ -4,7 +4,8 @@ Qué debe existir y verificarse **antes** de dar por desplegado el sistema. Cada
 verificable con un comando: si no se puede comprobar, no está hecho.
 
 Rama: `equipo5-deployment` · Ultima verificacion completa: 20/07, **22 servicios en compose
-(21 con healthcheck)** y 12 workloads en Kubernetes (6 StatefulSets + 5 Deployments + ingress).
+(21 con healthcheck)** y 13 workloads en Kubernetes (7 StatefulSets + 6 Deployments + ingress),
+con el pipeline de trazas portado y verificado.
 
 La tag de imagen NO se fija en este documento a proposito: es `git rev-parse --short HEAD` del
 commit desplegado, y queda obsoleta en cuanto alguien commitea. Ver seccion 2.
@@ -377,9 +378,110 @@ HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 | 9 | ~~**Provisioning de Grafana y Alertmanager**~~ **CERRADO 20/07** por el merge `b4d0a8a` del Equipo 4: Alertmanager + Mailpit como SMTP local, dashboard provisionado, y el bloque `alerting` en `prometheus.yml` que faltaba para que las reglas evaluadas le llegaran a alguien | Observabilidad | Equipo 4 |
 | 10 | **Separar los workers del proceso HTTP en ms-tutorias**. Cada replica agrega otra copia de los tres pollers compitiendo por las mismas filas; por eso su HPA tiene `maxReplicas: 2` mientras el resto tiene 4 | Escalabilidad | Equipo 1 + Equipo 5 |
 | 11 | ~~**Test de integracion que ejercite el flujo, no solo el arranque**~~ **CERRADO 20/07**: `scripts/integracion-flujo-completo.sh`, ejecutado por el job `arranque-real`. Verifica dos EFECTOS que solo existen si la cadena completa funciono -- la fila en `logs_notificacion` (habria atrapado el hallazgo #10) y que el endpoint protegido acepte el token (habria atrapado el #11) | Verificabilidad | Equipo 5 |
-| 12 | **Variables OTel ausentes en los 5 Deployments de K8s.** Ningun manifiesto define `OTEL_SERVICE_NAME` ni `OTEL_EXPORTER_OTLP_ENDPOINT`. `tracing.js` cae a su default `http://otel-collector:4317`, que en el cluster no resuelve (el collector solo existe en compose): el exportador reintenta en silencio y no hay trazas. No rompe el servicio, y por eso pasa desapercibido. Es la cara concreta de la deuda #1 | Observabilidad | Equipo 5 + Equipo 4 |
+| 12 | ~~**Variables OTel ausentes en los 5 Deployments de K8s**~~ **CERRADO 20/07**: portado el pipeline de trazas (`tempo.yaml`, `otel-collector.yaml`) mas las variables en los 5 Deployments. Verificado ejecutando: el collector reporta `resource spans: 5` -- los cinco microservicios exportando a la vez | Observabilidad | Equipo 5 + Equipo 4 |
 | 13 | **`enviarEmail` en `ms-tutorias/src/infrastructure/clients/notificaciones.client.js` es codigo muerto y ademas incorrecto.** No lo invoca nadie (la Saga notifica por RabbitMQ), pero hace `axios.post(url, payload)` **sin cabecera `Authorization`**. Si alguien lo conectara, el `jwt.middleware` que el Equipo 2 monto en `POST /:canal` lo cortaria con 401 en el primer `if (!authHeader)`. O se borra el cliente, o se le propaga el token | Mantenibilidad | Equipo 1 + Equipo 2 |
+| 15 | **No hay validacion de manifiestos K8s en el CI.** `k8s-lint` valida estructura (probes, resources, version) pero no que los pods arranquen: el job `arranque-real` levanta compose, no Kubernetes. Es lo que dejo el hallazgo #16 invisible un dia entero. Cerrarlo requiere un cluster efimero en CI (kind o k3s) -- el equivalente de la deuda #11, del lado de K8s | Verificabilidad | Equipo 5 |
 | 14 | **`materia` no se valida contra nada y no existe un catalogo de materias en el modelo.** Comprobado en ejecucion: se puede solicitar "Fisica Cuantica" al tutor `t09876`, cuya especialidad sembrada es "Calculo Multivariable", y la Saga responde `CONFIRMADA`. La causa de fondo es el modelo: `especialidad` es un `VARCHAR(255)` libre dentro de `tutores`, sin tabla de materias ni relacion tutor-materia, y un tutor solo puede tener una. Por eso tampoco se puede ofrecer un `<select>` en el cliente: no hay catalogo de donde poblarlo, y `ms-usuarios` solo expone `GET /tutores/:id` (busqueda por ID, no coleccion). **Recomendado:** validar `materia` contra la especialidad del tutor en `ejecutarSagaSolicitudTutoria`, despues de resolver al tutor y **antes** de crear la fila PENDIENTE -- es el ultimo punto sin efectos colaterales, asi el rechazo es un `throw` y no un rollback distribuido. Eso es una curita; la solucion real es un catalogo con relacion N:M | Modelo de dominio | Equipo 2 + Equipo 1 |
+
+---
+
+## 8. Portado del pipeline de trazas a Kubernetes (deuda #12) y lo que destapo
+
+Manifiestos nuevos: `kubernetes-manifests/tempo.yaml` y `kubernetes-manifests/otel-collector.yaml`,
+cada uno con su ConfigMap, Service y probes. Mas `OTEL_SERVICE_NAME` y
+`OTEL_EXPORTER_OTLP_ENDPOINT` en los 5 Deployments.
+
+**Verificacion (no es "aplique y no dio error"):**
+
+```bash
+kubectl logs deployment/otel-collector --tail 20
+# -> TracesExporter {"resource spans": 5, "spans": 116}
+```
+
+`resource spans: 5` son cinco servicios distintos exportando al mismo tiempo.
+
+**Los Services se llaman `tempo` y `otel-collector`, no `tempo-service`**, rompiendo la convencion
+del resto de mis manifiestos a proposito: la config del Equipo 4 apunta a `endpoint: tempo:4317`.
+Con otro nombre habria que forkear ese archivo, y **dos copias de la misma configuracion es la
+fuente de drift que este documento entero viene combatiendo**. Se adapta el nombre del Service, que
+es mio, antes que duplicar un archivo ajeno.
+
+**La probe del collector es `tcpSocket`, no `httpGet`**, porque la extension `health_check` sigue
+pedida al Equipo 4. Verifica que el puerto acepte conexiones, no que el pipeline hacia Tempo
+funcione. Cuando la activen, pasa a `httpGet` al 13133.
+
+### Hallazgo #16: el endurecimiento D4 rompia las 6 cosas con estado, un dia entero
+
+Al aplicar los manifiestos, **las 5 bases y RabbitMQ entraron en CrashLoopBackOff**:
+
+```
+chmod: /var/lib/postgresql/data/pgdata: Operation not permitted   # postgres
+su-exec: setgroups: Operation not permitted                        # rabbitmq
+```
+
+`capabilities: drop: ["ALL"]` le quita `CHOWN`, `FOWNER` y `SETGID` al entrypoint, que arranca como
+root para preparar el volumen y despues baja de usuario con `su-exec`. Sin ellas no puede.
+
+**Lo grave no es el error, es cuanto duro invisible.** El `securityContext` se commiteo el 19/07 a
+las 15:04; los PVC son del 18/07 a las 21:00. Los pods que se veian `Running` eran de ANTES del
+cambio, y **nadie volvio a aplicar los manifiestos hasta el 20/07**. Escrito, revisado, mergeado,
+documentado como hecho, y en verde en el CI -- porque `k8s-lint` valida que existan probes,
+resources y version fijada, no que los pods arranquen.
+
+**Es el hallazgo #7 sobre mi propio trabajo.** Y expone el limite real: no hay forma de validar
+manifiestos de Kubernetes sin un cluster. El job `arranque-real` levanta compose, no K8s. Es el
+equivalente exacto de la deuda #11 --cerrada esta manana-- pero del lado de Kubernetes. Queda como
+deuda #15.
+
+Corregido devolviendo el minimo necesario en vez de aflojar el `drop`:
+`add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]`.
+
+**Detalle operativo que cuesta caro si no se sabe:** un `kubectl apply` que responde `configured`
+NO significa que el cambio este corriendo. Un StatefulSet con `RollingUpdate` no reemplaza un pod
+que nunca llego a `Ready` -- espera a que el actual este sano, y como esta en CrashLoop, nunca
+avanza. Hay que borrar el pod a mano. **El propio Kubernetes informo como exito algo que no
+aplico.**
+
+### Hallazgo #17: el esquema de BD no existia en Kubernetes
+
+Con las bases arriba, `ms-tutorias` seguia muriendo:
+
+```
+relation "tutorias_notificaciones_outbox" does not exist   (42P01)
+```
+
+En compose el esquema entra por `./docker/init/<base>/01-schema.sql` montado en
+`/docker-entrypoint-initdb.d/`. **En Kubernetes eso no tenia equivalente**: ningun StatefulSet
+montaba nada, las bases nacian vacias.
+
+**Es el hallazgo #6 hecho a medias.** Ahi el esquema vivia solo como texto en un `.md` y se hizo
+ejecutable... para un entorno. La correccion arreglo compose y dejo K8s roto, que es exactamente lo
+que este documento le viene senalando al trabajo de los demas.
+
+Corregido: un ConfigMap por base con el SQL, montado en `/docker-entrypoint-initdb.d` como
+solo-lectura. Verificado borrando los PVC y dejando que se inicializaran por el camino nuevo --no
+aplicando el SQL a mano, que habria arreglado el sintoma sin probar el arreglo:
+
+```
+/usr/local/bin/docker-entrypoint.sh: running /docker-entrypoint-initdb.d/01-schema.sql
+database system is ready to accept connections
+```
+
+**Y la forma en que se manifesto vuelve concreta la deuda #2.** El stack trace era:
+
+```
+at async Gauge.collect (backlog.metrics.js:22)
+at async Registry.getMetricsAsString (prom-client)
+```
+
+El Gauge del Equipo 4 consulta la base cuando alguien pide `/metrics`; las probes apuntan a
+`/metrics`. Entonces: falta una tabla -> falla `/metrics` -> falla la liveness -> **Kubernetes mata
+el pod**. Un problema de la capa de datos derriba la de computo. La deuda #2 (`/health` propio,
+separado de `/metrics`) dejo de ser un riesgo teorico: esto es verla ocurrir.
+
+### Estado final verificado
+
+13 pods `1/1 Running`: 5 microservicios, 5 bases, RabbitMQ, otel-collector y Tempo.
 
 ---
 

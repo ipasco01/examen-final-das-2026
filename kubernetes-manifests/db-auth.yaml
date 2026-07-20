@@ -6,6 +6,63 @@
 # de datos guarda estado: necesita identidad estable y almacenamiento que sobreviva reinicios
 # (volumeClaimTemplates). La contraseña viene del Secret app-runtime-secrets, que NO se versiona
 # (ver app-runtime-secrets.example.yaml).
+# --- Equipo 5 (20/07), hallazgo #17: el esquema no existia en Kubernetes ---
+#
+# En compose el esquema entra por ./docker/init/auth/01-schema.sql montado en
+# /docker-entrypoint-initdb.d/. En Kubernetes eso NO tenia equivalente: el StatefulSet creaba el
+# volumen y nadie corria el SQL nunca. Las bases quedaban vacias y ms-tutorias moria en loop con
+# `relation "tutorias_notificaciones_outbox" does not exist`.
+#
+# Es el hallazgo #6 a medias: ahi el esquema vivia solo como texto en un .md y lo hice ejecutable
+# para compose, pero nunca lo porte al otro entorno. La correccion arreglaba un entorno y dejaba el
+# otro roto, que es justo lo que este PR viene senalando en el trabajo de los demas.
+#
+# IMPORTANTE: postgres ejecuta /docker-entrypoint-initdb.d/ SOLO cuando el directorio de datos esta
+# vacio. Sobre un PVC ya inicializado esto no corre. Para aplicarlo a una base existente:
+#   kubectl exec -i db-auth-0 -- psql -U user_auth -d db_auth < docker/init/auth/01-schema.sql
+#
+# El contenido es copia literal del archivo de la raiz. Mantenerlo sincronizado a mano es deuda:
+# lo correcto seria generar el ConfigMap en un paso de build (kubectl create configmap --from-file).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-auth-init
+data:
+  01-schema.sql: |
+    -- docker/init/auth/01-schema.sql — base db_auth (ms-auth)
+    --
+    -- Equipo 5 (Deployment). Postgres ejecuta automáticamente todo .sql montado en
+    -- /docker-entrypoint-initdb.d/ la PRIMERA vez que se inicializa el volumen de datos.
+    --
+    -- Por qué existe este archivo: hasta ahora el esquema vivía solo como bloques de código dentro
+    -- de docs/setup-and-usage.md, para copiar y pegar a mano en cada base. Eso significa que un
+    -- `docker compose down -v`, un clon nuevo del repo o una máquina distinta producían un sistema
+    -- sin tablas, y el fallo aparecía recién en runtime (500 en los endpoints, o /metrics roto en
+    -- ms-tutorias por los Gauges que consultan la base al hacer scrape).
+    --
+    -- El esquema es parte de cómo se levanta el sistema, no documentación: acá es ejecutable,
+    -- versionado y revisable en el PR.
+    --
+    -- Idempotencia: se usa IF NOT EXISTS y ON CONFLICT DO NOTHING para que reaplicarlo a mano sobre
+    -- una base existente no falle (initdb solo corre en volumen vacío, pero el archivo también sirve
+    -- como script de reparación: psql -U user_auth -d db_auth -f 01-schema.sql).
+
+    CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(50) PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        passwordHash VARCHAR(255) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        role VARCHAR(50) NOT NULL
+    );
+
+    -- Usuarios de demostración. Los hashes corresponden a las contraseñas 'password_ana' y
+    -- 'password_elena' (bcrypt). NO usar fuera de desarrollo local: son públicos en el repo.
+    INSERT INTO users (id, username, passwordHash, name, role) VALUES
+    ('e12345', 'ana.torres', '$2a$10$l9BWZgXLWxnVg.3B74PNi.0CTb93Wsin/XzzqGJLKT0/NrT7epiSm', 'Ana Torres', 'student'),
+    ('t09876', 'elena.solano', '$2a$10$gKxWS9CIu7QUq9ySaw6cSuns8gXvY/x/ynjj/X.giRWgN4jBuQ46W', 'Dra. Elena Solano', 'tutor')
+    ON CONFLICT (id) DO NOTHING;
+
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -41,6 +98,21 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+              # Equipo 5 (20/07). `drop: ["ALL"]` a secas rompia este StatefulSet, y el fallo
+              # estuvo latente un dia entero: el endurecimiento se commiteo el 19/07 15:04 pero
+              # el cluster no se volvio a aplicar hasta hoy, asi que los pods que se veian
+              # Running eran de ANTES del cambio. Escrito, revisado y documentado como hecho --
+              # nunca ejecutado. Es el hallazgo #7 (el CrashLoopBackOff del Equipo 2) repetido,
+              # esta vez sobre mi propio trabajo.
+              #
+              # El entrypoint de postgres arranca como root para preparar el directorio de datos
+              # (chown/chmod sobre el volumen montado) y recien despues baja a usuario postgres.
+              # Sin estas capabilities el chmod falla con "Operation not permitted" y el
+              # contenedor muere en loop. Se devuelve el minimo necesario, no se afloja el drop:
+              #   CHOWN + FOWNER    -> ajustar dueño y permisos de /var/lib/postgresql/data
+              #   DAC_OVERRIDE      -> leer/escribir archivos del volumen creados por otro uid
+              #   SETUID + SETGID   -> el su-exec que cambia de root a postgres
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
 
           ports:
             - containerPort: 5432
@@ -78,8 +150,16 @@ spec:
               cpu: 500m
               memory: 512Mi
           volumeMounts:
+            # Solo lectura: el contenedor no debe poder modificar el esquema.
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
             - name: db-auth-data
               mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: init
+          configMap:
+            name: db-auth-init
   volumeClaimTemplates:
     - metadata:
         name: db-auth-data

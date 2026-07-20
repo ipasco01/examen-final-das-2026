@@ -102,6 +102,16 @@ spec:
               value: "3000"
             - name: SERVICE_NAME
               value: "MS_Tutorias"
+            # --- Equipo 5 (20/07), deuda #12: OpenTelemetry ---
+            # Faltaban en los 5 Deployments. `tracing.js` cae a `http://otel-collector:4317` cuando
+            # no estan, y hasta hoy ese nombre no resolvia en el cluster: el exportador reintentaba
+            # en silencio y no habia una sola traza. Ahora el collector existe (otel-collector.yaml)
+            # y ademas se declara explicito: depender de un default que coincide por casualidad es
+            # la misma clase de omision que costo los hallazgos #1 y #10.
+            - name: OTEL_SERVICE_NAME
+              value: "ms-tutorias"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4317"
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:

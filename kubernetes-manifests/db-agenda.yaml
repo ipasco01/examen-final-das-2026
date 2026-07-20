@@ -3,6 +3,61 @@
 # Equipo 5 (Deployment) — issue "Datos y broker dentro del despliegue". Ver el comentario
 # completo del patrón en db-auth.yaml: StatefulSet + volumen persistente + contraseña desde el
 # Secret app-runtime-secrets (no versionado).
+# --- Equipo 5 (20/07), hallazgo #17: el esquema no existia en Kubernetes ---
+#
+# En compose el esquema entra por ./docker/init/agenda/01-schema.sql montado en
+# /docker-entrypoint-initdb.d/. En Kubernetes eso NO tenia equivalente: el StatefulSet creaba el
+# volumen y nadie corria el SQL nunca. Las bases quedaban vacias y ms-tutorias moria en loop con
+# `relation "tutorias_notificaciones_outbox" does not exist`.
+#
+# Es el hallazgo #6 a medias: ahi el esquema vivia solo como texto en un .md y lo hice ejecutable
+# para compose, pero nunca lo porte al otro entorno. La correccion arreglaba un entorno y dejaba el
+# otro roto, que es justo lo que este PR viene senalando en el trabajo de los demas.
+#
+# IMPORTANTE: postgres ejecuta /docker-entrypoint-initdb.d/ SOLO cuando el directorio de datos esta
+# vacio. Sobre un PVC ya inicializado esto no corre. Para aplicarlo a una base existente:
+#   kubectl exec -i db-agenda-0 -- psql -U user_agenda -d db_agenda < docker/init/agenda/01-schema.sql
+#
+# El contenido es copia literal del archivo de la raiz. Mantenerlo sincronizado a mano es deuda:
+# lo correcto seria generar el ConfigMap en un paso de build (kubectl create configmap --from-file).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-agenda-init
+data:
+  01-schema.sql: |
+    -- docker/init/agenda/01-schema.sql — base db_agenda (ms-agenda)
+    -- Equipo 5 (Deployment). Se ejecuta solo en la primera inicialización del volumen.
+    -- Ver docker/init/auth/01-schema.sql para el razonamiento completo.
+
+    -- gen_random_uuid() vive en pgcrypto en PostgreSQL 14 (en 13+ también está en pgcrypto; recién
+    -- desde 13 existe nativo como gen_random_uuid en core, pero la imagen usa 14-alpine y la
+    -- extensión garantiza el comportamiento en ambos casos).
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+    CREATE TABLE IF NOT EXISTS bloqueos (
+        idBloqueo UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        idTutor VARCHAR(50) NOT NULL,
+        fechaInicio TIMESTAMPTZ NOT NULL,
+        duracionMinutos INTEGER NOT NULL,
+        idEstudiante VARCHAR(50) NOT NULL,
+        createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        -- Esta restricción es la que hace atómico el "reservar horario" de la Saga: dos solicitudes
+        -- concurrentes para el mismo tutor y horario no pueden ganar las dos.
+        CONSTRAINT uq_bloqueos_tutor_fecha_inicio UNIQUE (idTutor, fechaInicio)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bloqueos_idTutor ON bloqueos(idTutor);
+
+    -- Bloqueo de demostración: ocupa un horario del tutor t54321 para poder probar el camino de
+    -- conflicto (409) sin tener que crear uno a mano.
+    INSERT INTO bloqueos (idTutor, fechaInicio, duracionMinutos, idEstudiante)
+    SELECT 't54321', '2025-10-22T10:00:00.000Z', 60, 'e12345'
+    WHERE NOT EXISTS (
+        SELECT 1 FROM bloqueos WHERE idTutor = 't54321' AND fechaInicio = '2025-10-22T10:00:00.000Z'
+    );
+
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -38,6 +93,21 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+              # Equipo 5 (20/07). `drop: ["ALL"]` a secas rompia este StatefulSet, y el fallo
+              # estuvo latente un dia entero: el endurecimiento se commiteo el 19/07 15:04 pero
+              # el cluster no se volvio a aplicar hasta hoy, asi que los pods que se veian
+              # Running eran de ANTES del cambio. Escrito, revisado y documentado como hecho --
+              # nunca ejecutado. Es el hallazgo #7 (el CrashLoopBackOff del Equipo 2) repetido,
+              # esta vez sobre mi propio trabajo.
+              #
+              # El entrypoint de postgres arranca como root para preparar el directorio de datos
+              # (chown/chmod sobre el volumen montado) y recien despues baja a usuario postgres.
+              # Sin estas capabilities el chmod falla con "Operation not permitted" y el
+              # contenedor muere en loop. Se devuelve el minimo necesario, no se afloja el drop:
+              #   CHOWN + FOWNER    -> ajustar dueño y permisos de /var/lib/postgresql/data
+              #   DAC_OVERRIDE      -> leer/escribir archivos del volumen creados por otro uid
+              #   SETUID + SETGID   -> el su-exec que cambia de root a postgres
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
 
           ports:
             - containerPort: 5432
@@ -73,8 +143,16 @@ spec:
               cpu: 500m
               memory: 512Mi
           volumeMounts:
+            # Solo lectura: el contenedor no debe poder modificar el esquema.
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
             - name: db-agenda-data
               mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: init
+          configMap:
+            name: db-agenda-init
   volumeClaimTemplates:
     - metadata:
         name: db-agenda-data

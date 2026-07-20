@@ -3,6 +3,60 @@
 # Equipo 5 (Deployment) — issue "Datos y broker dentro del despliegue". Ver el comentario
 # completo del patrón en db-auth.yaml: StatefulSet + volumen persistente + contraseña desde el
 # Secret app-runtime-secrets (no versionado).
+# --- Equipo 5 (20/07), hallazgo #17: el esquema no existia en Kubernetes ---
+#
+# En compose el esquema entra por ./docker/init/usuarios/01-schema.sql montado en
+# /docker-entrypoint-initdb.d/. En Kubernetes eso NO tenia equivalente: el StatefulSet creaba el
+# volumen y nadie corria el SQL nunca. Las bases quedaban vacias y ms-tutorias moria en loop con
+# `relation "tutorias_notificaciones_outbox" does not exist`.
+#
+# Es el hallazgo #6 a medias: ahi el esquema vivia solo como texto en un .md y lo hice ejecutable
+# para compose, pero nunca lo porte al otro entorno. La correccion arreglaba un entorno y dejaba el
+# otro roto, que es justo lo que este PR viene senalando en el trabajo de los demas.
+#
+# IMPORTANTE: postgres ejecuta /docker-entrypoint-initdb.d/ SOLO cuando el directorio de datos esta
+# vacio. Sobre un PVC ya inicializado esto no corre. Para aplicarlo a una base existente:
+#   kubectl exec -i db-usuarios-0 -- psql -U user_usuarios -d db_usuarios < docker/init/usuarios/01-schema.sql
+#
+# El contenido es copia literal del archivo de la raiz. Mantenerlo sincronizado a mano es deuda:
+# lo correcto seria generar el ConfigMap en un paso de build (kubectl create configmap --from-file).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-usuarios-init
+data:
+  01-schema.sql: |
+    -- docker/init/usuarios/01-schema.sql — base db_usuarios (ms-usuarios)
+    -- Equipo 5 (Deployment). Se ejecuta solo en la primera inicialización del volumen.
+    -- Ver docker/init/auth/01-schema.sql para el razonamiento completo.
+
+    CREATE TABLE IF NOT EXISTS estudiantes (
+        id VARCHAR(50) PRIMARY KEY,
+        nombreCompleto VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        carrera VARCHAR(255)
+    );
+
+    CREATE TABLE IF NOT EXISTS tutores (
+        id VARCHAR(50) PRIMARY KEY,
+        nombreCompleto VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        especialidad VARCHAR(255)
+    );
+
+    -- Datos de demostración. 'e12345' y 't09876' coinciden con los usuarios de db_auth: la Saga
+    -- resuelve el perfil contra este servicio usando el id que viene en el JWT emitido por ms-auth.
+    INSERT INTO estudiantes (id, nombreCompleto, email, carrera) VALUES
+    ('e12345', 'Ana Torres', 'ana.torres@universidad.edu', 'Ingeniería de Software'),
+    ('e67890', 'Luis Garcia', 'luis.garcia@universidad.edu', 'Medicina')
+    ON CONFLICT (id) DO NOTHING;
+
+    INSERT INTO tutores (id, nombreCompleto, email, especialidad) VALUES
+    ('t54321', 'Dr. Carlos Rojas', 'carlos.rojas@universidad.edu', 'Bases de Datos Avanzadas'),
+    ('t09876', 'Dra. Elena Solano', 'elena.solano@universidad.edu', 'Cálculo Multivariable')
+    ON CONFLICT (id) DO NOTHING;
+
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -38,6 +92,21 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+              # Equipo 5 (20/07). `drop: ["ALL"]` a secas rompia este StatefulSet, y el fallo
+              # estuvo latente un dia entero: el endurecimiento se commiteo el 19/07 15:04 pero
+              # el cluster no se volvio a aplicar hasta hoy, asi que los pods que se veian
+              # Running eran de ANTES del cambio. Escrito, revisado y documentado como hecho --
+              # nunca ejecutado. Es el hallazgo #7 (el CrashLoopBackOff del Equipo 2) repetido,
+              # esta vez sobre mi propio trabajo.
+              #
+              # El entrypoint de postgres arranca como root para preparar el directorio de datos
+              # (chown/chmod sobre el volumen montado) y recien despues baja a usuario postgres.
+              # Sin estas capabilities el chmod falla con "Operation not permitted" y el
+              # contenedor muere en loop. Se devuelve el minimo necesario, no se afloja el drop:
+              #   CHOWN + FOWNER    -> ajustar dueño y permisos de /var/lib/postgresql/data
+              #   DAC_OVERRIDE      -> leer/escribir archivos del volumen creados por otro uid
+              #   SETUID + SETGID   -> el su-exec que cambia de root a postgres
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
 
           ports:
             - containerPort: 5432
@@ -73,8 +142,16 @@ spec:
               cpu: 500m
               memory: 512Mi
           volumeMounts:
+            # Solo lectura: el contenedor no debe poder modificar el esquema.
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
             - name: db-usuarios-data
               mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: init
+          configMap:
+            name: db-usuarios-init
   volumeClaimTemplates:
     - metadata:
         name: db-usuarios-data
