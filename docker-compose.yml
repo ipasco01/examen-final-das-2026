@@ -531,6 +531,28 @@ services:
       ms-tutorias:
         condition: service_started # Esperar a que al menos uno arranque
 
+   # --- Alerting (Alertmanager + Mailpit como SMTP falso para demo local) ---
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager.yaml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    ports:
+      - "9093:9093" # UI de Alertmanager: ver alertas agrupadas, silenciarlas, etc.
+    depends_on:
+      - mailpit
+
+  mailpit:
+    image: axllent/mailpit:v1.20
+    container_name: mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025" # UI web: acá se ven los "correos" que llegan
+      - "1025:1025" # Puerto SMTP falso al que le apunta Alertmanager
+
   grafana:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:

@@ -1,0 +1,17 @@
+# grafana/provisioning/dashboards/dashboards.yaml
+# Le dice a Grafana: "lee los .json de esta carpeta y cárgalos como dashboards
+# automáticamente al arrancar". Así, al hacer docker-compose up, ya tienes los
+# paneles listos sin entrar a la UI a crearlos a mano (y si borras el volumen de
+# Grafana, no pierdes el dashboard: vuelve a leerlo del repo).
+apiVersion: 1
+ 
+providers:
+  - name: 'Tutorias App Dashboards'
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30 # cada 30s revisa si el .json cambió, y actualiza el dashboard
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false
