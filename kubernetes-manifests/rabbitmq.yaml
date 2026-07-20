@@ -101,13 +101,39 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 3
+          # HALLAZGO #29 (20/07) — EL LIMITE DE CPU HACIA IMPOSIBLE LA PROBE. No era la memoria.
+          #
+          # Sintoma: rabbitmq-0 en CrashLoopBackOff con 26 reinicios en 6h. Los eventos repetian
+          #   Startup probe failed:  command timed out: "rabbitmq-diagnostics -q ping" after 10s
+          #   Liveness probe failed: command timed out: "rabbitmq-diagnostics -q ping" after 10s
+          #
+          # Lo que descarta las explicaciones faciles:
+          #   Last State: Terminated, Reason: **Completed**, Exit Code: **0**
+          # No hay OOMKilled. El broker no se cayo: se apago ordenadamente porque el kubelet le
+          # mando SIGTERM al fallar la liveness. **El proceso estaba sano; lo mataron.**
+          #
+          # Causa: `rabbitmq-diagnostics` no es una consulta liviana -- levanta una VM de Erlang
+          # ENTERA, aparte, en cada ejecucion. Con `limits.cpu: 500m` (medio nucleo) compartido con
+          # el broker, Kubernetes estrangula el proceso y arrancar esa VM en menos de 10s es
+          # imposible. No es una maquina lenta: se reprodujo identico en dos equipos distintos, uno
+          # de ellos recien arrancado.
+          #
+          # POR QUE NO SE SUBE `timeoutSeconds` OTRA VEZ. Ya paso de 1 (default) a 10 en el
+          # hallazgo #4. Subirlo de nuevo seria darle mas tiempo a un proceso al que le falta CPU,
+          # no tiempo: taparia el sintoma y el broker seguiria estrangulado durante la operacion
+          # normal, no solo durante la probe.
+          #
+          # Y ES EL HALLAZGO #4 POR TERCERA VEZ, con un giro: el mismo comando, el mismo servicio,
+          # resultado opuesto entre compose y Kubernetes. **En compose funciona porque compose no
+          # le pone limite de CPU a nada.** La diferencia entre las dos plataformas vuelve a estar
+          # en algo que no se lee en el comando -- solo que esta vez la restriccion la escribi yo.
           resources:
             requests:
-              cpu: 100m
+              cpu: 200m        # el broker en reposo ya consume mas de 100m mientras arranca Erlang
               memory: 256Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 1000m       # un nucleo: alcanza para el broker Y para la VM de diagnostico
+              memory: 512Mi    # sin cambios: nunca hubo OOMKill, la memoria no era el problema
           volumeMounts:
             - name: rabbitmq-data
               mountPath: /var/lib/rabbitmq
