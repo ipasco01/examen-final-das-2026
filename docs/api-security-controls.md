@@ -97,15 +97,15 @@ Variables relevantes observadas:
 
 | Variable | Uso | Evidencia | Estado |
 | --- | --- | --- | --- |
-| `JWT_SECRET` | Firma y validación de JWT entre `ms-auth`, `ms-usuarios`, `ms-agenda`, `ms-tutorias` y Kong. | `*/src/config/index.js`, manifiestos y `docker-compose.yml`. | Implementado/parcial |
+| `JWT_SECRET` | Firma y validación de JWT entre `ms-auth`, `ms-usuarios`, `ms-agenda`, `ms-tutorias`, `ms-notificaciones` y Kong. | `*/src/config/index.js`, manifiestos y `docker-compose.yml`. | Implementado/parcial |
 | `JWT_EXPIRES_IN` | Expiración del token emitido por `ms-auth`. | `ms-auth/src/config/index.js`, `docker-compose.yml`. | Implementado/parcial |
 | `RABBITMQ_URL` | Conexión a RabbitMQ para tracking y notificaciones. | `docker-compose.yml`, configs de servicios. | Implementado/parcial |
-| `DB_PASSWORD` | Acceso a las 4 bases PostgreSQL (`db_auth`, `db_usuarios`, `db_agenda`, `db_tutorias`). | `docker-compose.yml`, configs de servicios. | Implementado |
+| `DB_PASSWORD` | Acceso a las 5 bases PostgreSQL (`db_auth`, `db_usuarios`, `db_agenda`, `db_tutorias`, `db_notificaciones`). | `docker-compose.yml`, configs de servicios. | Implementado |
 | `ENABLE_DEMO_FAULT_INJECTION` | Habilita falla demo posterior al bloqueo. | `ms-tutorias/src/domain/services/tutoria.service.js`. | Implementado para demo |
 
-El código de `ms-auth` falla al arrancar si `JWT_SECRET` no está definido. En `ms-usuarios`/`ms-agenda`/`ms-tutorias`, el secreto se lee desde entorno para el middleware JWT, pero no se observa una validación equivalente de arranque (fallarían recién en la primera request, no al iniciar el proceso).
+El código de `ms-auth` falla al arrancar si `JWT_SECRET` no está definido. En `ms-usuarios`/`ms-agenda`/`ms-tutorias`/`ms-notificaciones`, el secreto se lee desde entorno para el middleware JWT (`POST /:canal` de `ms-notificaciones` también lo exige desde que se cerró el hallazgo del 20/07 en `deployment-release-checklist.md`), pero no se observa una validación equivalente de arranque (fallarían recién en la primera request, no al iniciar el proceso).
 
-Resuelto: `docker-compose.yml` ya no trae ningún fallback hardcodeado para `JWT_SECRET`, las 4 contraseñas de BD, credenciales de RabbitMQ ni la contraseña de Grafana -- todas son obligatorias (`${VAR:?mensaje}`) y se proveen vía un `.env` en la raíz del repo (gitignorado). Los manifiestos de Kubernetes (`kong-security.yaml`) siguen usando un secreto placeholder (`CHANGE_ME_WITH_APP_JWT_SECRET`) que debe reemplazarse y gestionarse externamente antes de cualquier despliegue no local.
+Resuelto: `docker-compose.yml` ya no trae ningún fallback hardcodeado para `JWT_SECRET`, las 5 contraseñas de BD, credenciales de RabbitMQ ni la contraseña de Grafana -- todas son obligatorias (`${VAR:?mensaje}`) y se proveen vía un `.env` en la raíz del repo (gitignorado). Los manifiestos de Kubernetes (`kong-security.yaml`) siguen usando un secreto placeholder (`CHANGE_ME_WITH_APP_JWT_SECRET`) que debe reemplazarse y gestionarse externamente antes de cualquier despliegue no local.
 
 ## Kong/API Gateway
 
@@ -157,7 +157,7 @@ El header de fault injection no debe usarse en flujos normales. Su gating actual
 
 ## Riesgos y pendientes
 
-- **Pendiente:** formalizar una matriz de autorización por endpoint, rol y recurso.
+- **Pendiente:** formalizar una matriz de autorización por endpoint, rol y recurso. Caso concreto encontrado en auditoría de la Saga: `ms-agenda` valida firma del JWT en todas sus rutas (`jwt.middleware.js`) pero nunca chequea `req.user.role` — cualquier token válido (de un estudiante, un tutor, o el JWT de servicio de corta duración que firma `compensacion.worker.js`) puede llamar `DELETE /agenda/bloqueos/:id`, no solo `ms-tutorias`.
 - **Resuelto (aplicación):** rate limiting agregado con `express-rate-limit` en los 5 microservicios (100 req/15min por IP), incluido `POST /auth/token`. **Pendiente:** rate limiting también a nivel de gateway Kong.
 - **Pendiente:** definir rotación de `JWT_SECRET`, separación por entorno y almacenamiento en un gestor de secretos real.
 - **Pendiente:** validar formalmente requests contra OpenAPI/JSON Schema o middleware equivalente.

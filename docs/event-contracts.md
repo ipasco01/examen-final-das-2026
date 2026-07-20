@@ -47,7 +47,10 @@ El contrato de dead-letter aplica a la cola principal de notificaciones:
 
 ```txt
 notificaciones_email_queue
-  -- nack(false, false) / reject sin requeue --> notificaciones_dlx
+  -- error de validación (400) --> nack(false, false) directo --> notificaciones_dlx
+  -- error de infraestructura, reintentos < NOTIFICACIONES_MAX_REINTENTOS -->
+       ack(msg) + reencolado con header x-reintentos incrementado (sin backoff/delay)
+  -- error de infraestructura, reintentos agotados --> nack(false, false) --> notificaciones_dlx
   -- routing key: notificaciones_dlq --> notificaciones_dlq
 ```
 
@@ -59,11 +62,11 @@ Configuración esperada:
 | Dead-letter exchange | `notificaciones_dlx` |
 | Dead-letter routing key | `notificaciones_dlq` |
 | Cola dead-letter | `notificaciones_dlq` |
-| Requeue en error | `false` |
+| Requeue en error de validación | `false` (directo a DLQ, sin reintento) |
+| Requeue en error de infraestructura | reencolado manual (`ack` + `sendToQueue` con `x-reintentos`) hasta `NOTIFICACIONES_MAX_REINTENTOS` (default 3), luego `nack(false, false)` |
 | Confirmación en éxito | `ack(msg)` |
-| Confirmación en error | `nack(msg, false, false)` |
 
-Estado: **implementado** para aislamiento de mensajes inválidos o fallidos. **Parcial** para operación, porque no hay consumidor, retry controlado ni política documentada de inspección/vaciado de DLQ.
+Estado: **implementado**, incluye retry controlado antes de DLQ (`ms-notificaciones/src/app.js`, header `x-reintentos`) — ya no es un `nack` inmediato en el primer error de infraestructura. **Pendiente:** el reencolado no tiene backoff/delay entre intentos (los 3 se consumen casi instantáneo ante una falla sostenida), y sigue sin política documentada de inspección/vaciado de DLQ más allá de `scripts/reencolar-dlq.js` (reencolado manual, no automático).
 
 ## Productores y consumidores
 
@@ -222,7 +225,7 @@ solape ticks entre sí.
 | Cola de notificaciones declarada por productor | `ms-tutorias` ejecuta `assertQueue('notificaciones_email_queue', ...)` antes de publicar. | Implementado |
 | Cola de notificaciones declarada por consumidor | `ms-notificaciones` ejecuta `assertQueue(queueName, { durable, deadLetterExchange, deadLetterRoutingKey })`. | Implementado |
 | DLQ configurada | `notificaciones_dlx`, `notificaciones_dlq` y binding declarados en `ms-notificaciones`. | Implementado |
-| Mensajes inválidos aislados | En error, consumidor ejecuta `nack(msg, false, false)`. | Implementado |
+| Mensajes inválidos aislados | En error de validación, consumidor ejecuta `nack(msg, false, false)` directo; en error de infraestructura, reintenta hasta `NOTIFICACIONES_MAX_REINTENTOS` (header `x-reintentos`) antes de hacer `nack`. | Implementado |
 | Eventos visibles en dashboard | `tracking-dashboard` consume el exchange y emite `tracking_event`. | Implementado/parcial |
 
 ## Riesgos y pendientes
