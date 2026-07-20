@@ -171,15 +171,51 @@ services:
       - PORT=3003
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
       - SERVICE_NAME=MS_Notificaciones
+      # --- Equipo 5 (19/07): VARIABLES DE BD. Faltaban por completo. ---
+      # src/config/db.js las lee para construir el Pool de pg; sin ellas host queda undefined
+      # y node-postgres cae a 'localhost', que dentro del contenedor no tiene Postgres.
+      # Se detecto al revisar el merge, no en ejecucion: el fallo aparece recien en la primera
+      # notificacion que intenta deduplicar por correlation_id.
+      - DB_HOST=db-notificaciones
+      - DB_PORT=5432
+      - DB_USER=user_notificaciones
+      - DB_PASSWORD=${NOTIFICACIONES_DB_PASSWORD:?Definí NOTIFICACIONES_DB_PASSWORD en tu .env raíz}
+      - DB_NAME=db_notificaciones
+      # --- Equipo 5 (20/07): JWT_SECRET. Faltaba SOLO en compose; en K8s ya estaba. ---
+      # El merge del Equipo 2 agrego jwt.middleware.js y lo monto en POST /notificaciones/:canal.
+      # El middleware hace jwt.verify(token, config.jwtSecret); con la variable ausente el
+      # secreto llega undefined, jwt.verify lanza, el catch responde 401 y TODO token valido
+      # se rechaza. Los otros 4 microservicios ya la tenian: este quedo fuera al agregarse
+      # el middleware despues. Asimetria compose/K8s: el mismo token funcionaba en el cluster
+      # y fallaba en compose.
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
       # --- OpenTelemetry (trazas distribuidas) ---
       - OTEL_SERVICE_NAME=ms-notificaciones
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
     depends_on:
       rabbitmq:
         condition: service_healthy # Espera a que RabbitMQ responda, no solo a que arranque
+      # Equipo 5: el repositorio de logs escribe desde el primer mensaje consumido, asi que la
+      # base tiene que estar SANA antes de arrancar, no solo encendida.
+      db-notificaciones:
+        condition: service_healthy
 
   # --- Proxy para Chaos Engineering ---
   toxiproxy:
+    # Equipo 5: healthcheck con CMD (no CMD-SHELL). La imagen no tiene shell, pero SI trae su
+    # propio cliente: /toxiproxy-cli. CMD ejecuta el binario directo, sin pasar por un shell.
+    # Comprobado:  docker exec toxiproxy /toxiproxy-cli list  -> lista los proxies, exit 0
+    # Es mejor que un chequeo de socket: no solo confirma que el puerto 8474 escucha, sino que
+    # la API de administracion responde y devuelve la configuracion de proxies.
+    # Correccion honesta: antes se documento que este servicio 'no podia' tener healthcheck por
+    # falta de shell. La conclusion correcta era 'no puede con CMD-SHELL'; CMD siempre estuvo
+    # disponible y no se evaluo.
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     image: ghcr.io/shopify/toxiproxy:2.5.0
     container_name: toxiproxy
     restart: unless-stopped
@@ -301,6 +337,35 @@ services:
         condition: service_healthy
 
   # --- Servicio de Base de Datos PostgreSQL ---
+  # --- Base de datos de Notificaciones ---
+  # Equipo 5: servicio AGREGADO el 19/07 tras detectar drift en el merge del Equipo 2.
+  # ms-notificaciones incorporo src/config/db.js y logNotificacion.repository.js, que hacen
+  # INSERT/SELECT sobre 'logs_notificacion' en cada notificacion (deduplicacion por
+  # correlation_id). Pero no existia ninguna base para ese servicio: el Pool arrancaba con
+  # host=undefined y caia al default 'localhost' dentro del contenedor -> connection refused.
+  # Ademas ya existia docker/init/notificaciones/ sin ninguna base que lo montara.
+  # Es el mismo patron del primer hallazgo (ms-auth sin variables de BD), repetido con otro
+  # servicio y otro equipo: el codigo declara una dependencia que el despliegue no provee.
+  db-notificaciones:
+    image: postgres:14-alpine
+    container_name: db_notificaciones_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: user_notificaciones
+      POSTGRES_PASSWORD: ${NOTIFICACIONES_DB_PASSWORD:?Definí NOTIFICACIONES_DB_PASSWORD en tu .env raíz}
+      POSTGRES_DB: db_notificaciones
+    ports:
+      - "5436:5432" # Siguiente puerto libre: las otras cuatro usan 5432-5435
+    volumes:
+      - postgres_data_notificaciones:/var/lib/postgresql/data
+      - ./docker/init/notificaciones:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_notificaciones -d db_notificaciones"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   db-auth:
     image: postgres:14-alpine
     container_name: db_auth_postgres
@@ -536,6 +601,7 @@ services:
 
 # --- Definición de Volúmenes ---
 volumes:
+  postgres_data_notificaciones:
   postgres_data_auth:
   postgres_data_usuarios:
   postgres_data_agenda:
