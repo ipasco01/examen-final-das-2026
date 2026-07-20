@@ -32,6 +32,9 @@
         .cancelar-btn { background: none; border: 1px solid #b71c1c; color: #b71c1c; padding: 0.3rem 0.6rem; font-size: 0.8rem; font-weight: 600; border-radius: 4px; }
         .cancelar-btn:hover { background: #b71c1c; color: white; }
         .cancelar-btn:disabled { opacity: 0.5; cursor: default; }
+        .reprogramar-btn { background: none; border: 1px solid #0d6e6e; color: #0d6e6e; padding: 0.3rem 0.6rem; font-size: 0.8rem; font-weight: 600; border-radius: 4px; margin-right: 0.4rem; }
+        .reprogramar-btn:hover { background: #0d6e6e; color: white; }
+        .reprogramar-btn:disabled { opacity: 0.5; cursor: default; }
     </style>
 </head>
 <body>
@@ -161,6 +164,45 @@
             }
         };
 
+        const reprogramarTutoria = async (tutoria, botonEl) => {
+            const nuevaFecha = prompt(
+                'Nueva fecha y hora (ISO 8601, ej. 2026-11-15T16:00:00.000Z):',
+                tutoria.fecha
+            );
+            if (!nuevaFecha) return; // canceló el prompt
+
+            if (Number.isNaN(new Date(nuevaFecha).getTime())) {
+                alert('La fecha ingresada no es válida. Usá formato ISO 8601.');
+                return;
+            }
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            botonEl.disabled = true;
+            botonEl.textContent = 'Reprogramando...';
+
+            try {
+                const response = await fetch(`/api/tutorias/${encodeURIComponent(tutoria.idTutoria)}/reprogramar`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password, nuevaFecha, duracionMinutos: 60 })
+                });
+
+                const resultado = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(resultado.error ? JSON.stringify(resultado.error) : 'Error desconocido');
+                }
+
+                await cargarTutorias();
+            } catch (error) {
+                alert(`No se pudo reprogramar: ${error.message}`);
+                botonEl.disabled = false;
+                botonEl.textContent = 'Reprogramar';
+            }
+        };
+
         const renderTutorias = (tutorias) => {
             if (!tutorias.length) {
                 tutoriasListaDiv.innerHTML = '<p><em>Todavía no tenés tutorías.</em></p>';
@@ -174,7 +216,7 @@
                 card.innerHTML = `
                     <div class="fila-top">
                         <span class="estado estado-${escapeHtml(t.estado)}">${escapeHtml(t.estado)}</span>
-                        ${t.estado === 'CONFIRMADA' ? '<button type="button" class="cancelar-btn">Cancelar</button>' : ''}
+                        ${t.estado === 'CONFIRMADA' ? '<span><button type="button" class="reprogramar-btn">Reprogramar</button><button type="button" class="cancelar-btn">Cancelar</button></span>' : ''}
                     </div>
                     <strong>${escapeHtml(t.materia)}</strong> con ${escapeHtml(t.tutorNombre || t.idTutor)}
                     <div class="fecha">${escapeHtml(formatearFecha(t.fecha))}</div>
@@ -183,6 +225,10 @@
                 const botonCancelar = card.querySelector('.cancelar-btn');
                 if (botonCancelar) {
                     botonCancelar.addEventListener('click', () => cancelarTutoria(t.idTutoria, botonCancelar));
+                }
+                const botonReprogramar = card.querySelector('.reprogramar-btn');
+                if (botonReprogramar) {
+                    botonReprogramar.addEventListener('click', () => reprogramarTutoria(t, botonReprogramar));
                 }
                 tutoriasListaDiv.appendChild(card);
             });

@@ -1,15 +1,15 @@
-﻿# docker-compose.yml
+# docker-compose.yml
 #
-# Cambios del Equipo 5 (Deployment) â€” issue "Arranque ordenado y auto-recuperaciÃ³n":
-#   - restart: unless-stopped en todos los servicios (auto-recuperaciÃ³n ante caÃ­das).
+# Cambios del Equipo 5 (Deployment) — issue "Arranque ordenado y auto-recuperación":
+#   - restart: unless-stopped en todos los servicios (auto-recuperación ante caídas).
 #   - healthcheck en las 4 bases de datos y RabbitMQ.
 #   - depends_on con condition: service_healthy para eliminar la carrera de arranque.
-#   - ImÃ¡genes de Prometheus y Grafana fijadas a versiÃ³n (reproducibilidad; eran :latest).
-#   - SincronizaciÃ³n de variables (drift): ms-auth recibÃ­a cero variables de BD (su db.js caÃ­a a
-#     localhost) y ms-usuarios/ms-agenda validan JWT en su middleware pero no recibÃ­an JWT_SECRET.
+#   - Imágenes de Prometheus y Grafana fijadas a versión (reproducibilidad; eran :latest).
+#   - Sincronización de variables (drift): ms-auth recibía cero variables de BD (su db.js caía a
+#     localhost) y ms-usuarios/ms-agenda validan JWT en su middleware pero no recibían JWT_SECRET.
 
 services:
-  # --- Servicio de AutenticaciÃ³n ---
+  # --- Servicio de Autenticación ---
   ms-auth:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
@@ -27,17 +27,17 @@ services:
     image: ghcr.io/elcbas/ms-auth:${IMAGE_TAG:-0ab70dc}
     restart: unless-stopped
     ports:
-      - "4000:4000" # Mapea el puerto 4000 de tu mÃ¡quina al 4000 del contenedor
+      - "4000:4000" # Mapea el puerto 4000 de tu máquina al 4000 del contenedor
     environment:
       - PORT=4000
-      - JWT_SECRET=${JWT_SECRET:?DefinÃ­ JWT_SECRET en tu .env raÃ­z}
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
       - JWT_EXPIRES_IN=1h
       - SERVICE_NAME=MS_Auth
-      # --- VARIABLES PARA LA BD (Equipo 5: faltaban; db.js caÃ­a al default localhost) ---
+      # --- VARIABLES PARA LA BD (Equipo 5: faltaban; db.js caía al default localhost) ---
       - DB_HOST=db-auth
       - DB_PORT=5432
       - DB_USER=user_auth
-      - DB_PASSWORD=${AUTH_DB_PASSWORD:?DefinÃ­ AUTH_DB_PASSWORD en tu .env raÃ­z}
+      - DB_PASSWORD=${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_auth
     depends_on:
       db-auth:
@@ -68,15 +68,15 @@ services:
       - DB_HOST=db-usuarios # El nombre del servicio de la BD en Docker Compose
       - DB_PORT=5432
       - DB_USER=user_usuarios
-      - DB_PASSWORD=${USUARIOS_DB_PASSWORD:?DefinÃ­ USUARIOS_DB_PASSWORD en tu .env raÃ­z}
+      - DB_PASSWORD=${USUARIOS_DB_PASSWORD:?Definí USUARIOS_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_usuarios
       - SERVICE_NAME=MS_Usuarios
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
       # Equipo 5: el middleware JWT agregado por el Equipo 3 necesita este secreto (config/index.js
-      # no define default para jwtSecret; sin esta variable, toda validaciÃ³n de token fallarÃ­a).
-      - JWT_SECRET=${JWT_SECRET:?DefinÃ­ JWT_SECRET en tu .env raÃ­z}
+      # no define default para jwtSecret; sin esta variable, toda validación de token fallaría).
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
     depends_on:
-      # Espera a que la BD y el broker estÃ©n SANOS, no solo encendidos (elimina la carrera de arranque)
+      # Espera a que la BD y el broker estén SANOS, no solo encendidos (elimina la carrera de arranque)
       db-usuarios:
         condition: service_healthy
       rabbitmq:
@@ -107,12 +107,12 @@ services:
       - DB_HOST=db-agenda # Nombre del servicio de BD
       - DB_PORT=5432
       - DB_USER=user_agenda
-      - DB_PASSWORD=${AGENDA_DB_PASSWORD:?DefinÃ­ AGENDA_DB_PASSWORD en tu .env raÃ­z}
+      - DB_PASSWORD=${AGENDA_DB_PASSWORD:?Definí AGENDA_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_agenda
       - SERVICE_NAME=MS_Agenda
       - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672
-      # Equipo 5: mismo caso que ms-usuarios â€” el middleware JWT del Equipo 3 requiere el secreto.
-      - JWT_SECRET=${JWT_SECRET:?DefinÃ­ JWT_SECRET en tu .env raÃ­z}
+      # Equipo 5: mismo caso que ms-usuarios — el middleware JWT del Equipo 3 requiere el secreto.
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
     depends_on:
       db-agenda:
         condition: service_healthy
@@ -121,15 +121,15 @@ services:
 
   # --- Servicio de Message Broker ---
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine # Imagen con interfaz de gestiÃ³n
+    image: rabbitmq:3.13-management-alpine # Imagen con interfaz de gestión
     container_name: rabbitmq
     restart: unless-stopped
     ports:
       - "5672:5672" # Puerto AMQP para los servicios
-      - "15672:15672" # Puerto para la interfaz web de gestiÃ³n
+      - "15672:15672" # Puerto para la interfaz web de gestión
     environment:
-      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER:?DefinÃ­ RABBITMQ_DEFAULT_USER en tu .env raÃ­z}
-      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS:?DefinÃ­ RABBITMQ_DEFAULT_PASS en tu .env raÃ­z}
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER:?Definí RABBITMQ_DEFAULT_USER en tu .env raíz}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq/
     healthcheck:
@@ -160,7 +160,7 @@ services:
       - "3003:3003"
     environment:
       - PORT=3003
-      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexiÃ³n a RabbitMQ
+      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
       - SERVICE_NAME=MS_Notificaciones
     depends_on:
       rabbitmq:
@@ -181,7 +181,7 @@ services:
       ms-usuarios:
         condition: service_started
 
-  # --- Servicio de TutorÃ­as (El Orquestador) ---
+  # --- Servicio de Tutorías (El Orquestador) ---
   ms-tutorias:
     # Equipo 5 (D1 de la auditoria): healthcheck propio. Antes estos servicios solo se
     # beneficiaban de la salud ajena (esperaban BD/broker sanos) pero nadie verificaba la suya:
@@ -202,7 +202,7 @@ services:
       - "3000:3000"
     environment:
       - PORT=3000
-      # --- CAMBIO CRÃTICO DE NETWORKING - Identificacion y Nombramiento de Servicios ---
+      # --- CAMBIO CRÍTICO DE NETWORKING - Identificacion y Nombramiento de Servicios ---
       # Dentro de la red de Docker, los servicios se comunican usando su nombre de servicio,
       # no 'localhost'. Docker Compose se encarga de resolver estos nombres.
       # Ruta por defecto para PC03 Mission 2: ms-tutorias -> Toxiproxy -> ms-usuarios.
@@ -210,16 +210,16 @@ services:
       - MS_USUARIOS_URL=http://toxiproxy:8001/usuarios
       - MS_AGENDA_URL=http://ms-agenda:3002/agenda
       - MS_NOTIFICACIONES_URL=http://ms-notificaciones:3003/notificaciones
-      - JWT_SECRET=${JWT_SECRET:?DefinÃ­ JWT_SECRET en tu .env raÃ­z}
-      # --- VARIABLES DE LA BD PARA TUTORÃAS ---
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
+      # --- VARIABLES DE LA BD PARA TUTORÍAS ---
       - DB_HOST=db-tutorias
       - DB_PORT=5432
       - DB_USER=user_tutorias
-      - DB_PASSWORD=${TUTORIAS_DB_PASSWORD:?DefinÃ­ TUTORIAS_DB_PASSWORD en tu .env raÃ­z}
+      - DB_PASSWORD=${TUTORIAS_DB_PASSWORD:?Definí TUTORIAS_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_tutorias
       - SERVICE_NAME=MS_Tutorias
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexiÃ³n a RabbitMQ
+      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:-rabbit}:${RABBITMQ_DEFAULT_PASS:-rabbit}@rabbitmq:5672 # URL de conexión a RabbitMQ
     depends_on:
       ms-auth:
         condition: service_started
@@ -281,7 +281,7 @@ services:
       - "9000:9000"
     environment:
       - PORT=9000
-      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:?DefinÃ­ RABBITMQ_DEFAULT_USER en tu .env raÃ­z}:${RABBITMQ_DEFAULT_PASS:?DefinÃ­ RABBITMQ_DEFAULT_PASS en tu .env raÃ­z}@rabbitmq:5672
+      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER:?Definí RABBITMQ_DEFAULT_USER en tu .env raíz}:${RABBITMQ_DEFAULT_PASS:?Definí RABBITMQ_DEFAULT_PASS en tu .env raíz}@rabbitmq:5672
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -293,10 +293,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: user_auth
-      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:?DefinÃ­ AUTH_DB_PASSWORD en tu .env raÃ­z}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en tu .env raíz}
       POSTGRES_DB: db_auth
     ports:
-      - "5435:5432" # Puerto propio para evitar conflicto con las demÃ¡s BD (5432-5434)
+      - "5435:5432" # Puerto propio para evitar conflicto con las demás BD (5432-5434)
     volumes:
       - postgres_data_auth:/var/lib/postgresql/data
       # Equipo 5: esquema versionado y ejecutable. Postgres corre todo .sql de
@@ -316,7 +316,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: user_usuarios # Define el usuario de la BD
-      POSTGRES_PASSWORD: ${USUARIOS_DB_PASSWORD:?DefinÃ­ USUARIOS_DB_PASSWORD en tu .env raÃ­z}
+      POSTGRES_PASSWORD: ${USUARIOS_DB_PASSWORD:?Definí USUARIOS_DB_PASSWORD en tu .env raíz}
       POSTGRES_DB: db_usuarios # Define el nombre de la base de datos
     ports:
       - "5432:5432" # Expone el puerto 5432 en el host y 5432 para el Postgres dentro del contenedor
@@ -339,7 +339,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: user_agenda
-      POSTGRES_PASSWORD: ${AGENDA_DB_PASSWORD:?DefinÃ­ AGENDA_DB_PASSWORD en tu .env raÃ­z}
+      POSTGRES_PASSWORD: ${AGENDA_DB_PASSWORD:?Definí AGENDA_DB_PASSWORD en tu .env raíz}
       POSTGRES_DB: db_agenda
     ports:
       - "5433:5432" # Mapeamos al puerto 5433 en el host para evitar conflicto con db-usuarios (5432)
@@ -362,7 +362,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: user_tutorias
-      POSTGRES_PASSWORD: ${TUTORIAS_DB_PASSWORD:?DefinÃ­ TUTORIAS_DB_PASSWORD en tu .env raÃ­z}
+      POSTGRES_PASSWORD: ${TUTORIAS_DB_PASSWORD:?Definí TUTORIAS_DB_PASSWORD en tu .env raíz}
       POSTGRES_DB: db_tutorias
     ports:
       - "5434:5432" # Se mapea el puerto 5434 en el host para evitar conflicto con db-usuarios (5432)
@@ -432,7 +432,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    # Equipo 5: versiÃ³n fijada (era :latest, build no reproducible)
+    # Equipo 5: versión fijada (era :latest, build no reproducible)
     image: prom/prometheus:v2.53.0
     container_name: prometheus
     restart: unless-stopped
@@ -455,7 +455,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    # Equipo 5: versiÃ³n fijada (era :latest, build no reproducible)
+    # Equipo 5: versión fijada (era :latest, build no reproducible)
     image: grafana/grafana:11.1.0
     container_name: grafana
     restart: unless-stopped
@@ -465,7 +465,7 @@ services:
       # Equipo 5: restaurada la guarda del Equipo 3. Con ':-local-dev-admin' Grafana levantaba con
       # una password conocida y publicada en el repo si nadie definia la variable. Con ':?' el
       # compose se niega a arrancar: falla ruidosamente en vez de quedar inseguro en silencio.
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?DefinÃ­ GRAFANA_ADMIN_PASSWORD en tu .env raÃ­z}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Definí GRAFANA_ADMIN_PASSWORD en tu .env raíz}
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
     depends_on:
@@ -474,7 +474,7 @@ services:
       loki:
         condition: service_started
 
-  # --- LOGS CENTRALIZADOS (Loki + Promtail) â€” Equipo 4 ---
+  # --- LOGS CENTRALIZADOS (Loki + Promtail) — Equipo 4 ---
   loki:
     image: grafana/loki:2.9.4
     container_name: loki
@@ -510,7 +510,7 @@ services:
     container_name: promtail
     restart: unless-stopped
     volumes:
-      # Necesita leer el socket de Docker para descubrir quÃ© contenedores existen,
+      # Necesita leer el socket de Docker para descubrir qué contenedores existen,
       # y la carpeta donde Docker guarda los logs (driver json-file, el default).
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
@@ -520,7 +520,6 @@ services:
       loki:
         condition: service_healthy
 
-  
 # --- Definición de Volúmenes ---
 volumes:
   postgres_data_auth:

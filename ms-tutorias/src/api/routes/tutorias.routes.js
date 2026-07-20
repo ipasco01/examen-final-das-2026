@@ -20,4 +20,8 @@ router.get('/:id', verifyTokenMiddleware, tutoriasController.getTutoriaPorId);
 // Cancelación de una tutoría CONFIRMADA (cierra el gap de CANCELADA documentado en S11).
 router.delete('/:id', verifyTokenMiddleware, tutoriasController.cancelarTutoria);
 
+// Reprogramación de una tutoría CONFIRMADA: bloquea el horario nuevo antes de liberar el viejo
+// (reservar-primero) para que el estudiante nunca quede sin horario.
+router.patch('/:id/reprogramar', verifyTokenMiddleware, tutoriasController.reprogramarTutoria);
+
 module.exports = router;
