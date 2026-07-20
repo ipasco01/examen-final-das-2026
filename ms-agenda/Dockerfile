@@ -50,4 +50,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 
 USER node
 
-CMD ["node", "src/app.js"]
+CMD ["node", "-r", "./src/config/tracing.js", "src/app.js"]
