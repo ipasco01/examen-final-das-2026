@@ -35,13 +35,42 @@ jobs:
           cp .env.example .env
           docker compose config > /dev/null
 
-      - name: Ninguna imagen usa :latest
+      - name: Ninguna imagen usa :latest ni queda sin fijar
         # Una tag flotante hace que dos personas con el mismo commit corran binarios distintos.
+        #
+        # CORRECCION DEL 20/07 -- este chequeo tenia un agujero y paso en verde durante dias.
+        # La version anterior era `docker compose config | grep "image:.*:latest"`. El problema:
+        # un servicio que solo declara `build:` y NO `image:` no produce ninguna linea `image:`
+        # en la salida de `docker compose config` (verificado en la maquina de desarrollo). Docker
+        # igual le genera un nombre al construir -- "<proyecto>-<servicio>:latest" -- asi que el
+        # servicio corria con tag flotante mientras el lint no encontraba nada que reportar.
+        #
+        # Asi estaban client-sim y tracking-dashboard. Se descubrio leyendo la salida de un
+        # `docker compose build` ("naming to ...-client-sim:latest"), no por este chequeo.
+        #
+        # La leccion: un grep solo puede fallar sobre lo que esta escrito. El caso peligroso era
+        # justamente la AUSENCIA de una clave, que ningun patron de texto puede detectar. Por eso
+        # ahora se parsea el YAML, igual que el chequeo de `restart` de abajo -- que nunca tuvo
+        # este problema precisamente porque pregunta por la ausencia, no por el contenido.
         run: |
-          if docker compose config | grep -E "image:.*:latest"; then
-            echo "::error::Hay imagenes con :latest. Fijar por version o por digest."
-            exit 1
-          fi
+          python3 - <<'EOF'
+          import yaml, sys
+          servicios = yaml.safe_load(open('docker-compose.yml'))['services']
+          errores = []
+          for nombre, cfg in servicios.items():
+              imagen = cfg.get('image')
+              if imagen is None:
+                  errores.append(f"{nombre}: no declara 'image' -- Docker le asignara ':latest' al construir")
+              elif str(imagen).endswith(':latest'):
+                  errores.append(f"{nombre}: usa ':latest' explicitamente")
+              elif ':' not in str(imagen).rsplit('/', 1)[-1]:
+                  errores.append(f"{nombre}: la imagen '{imagen}' no tiene tag (Docker asume ':latest')")
+          if errores:
+              for e in errores:
+                  print(f"::error::{e}")
+              sys.exit(1)
+          print(f"OK: las {len(servicios)} imagenes estan fijadas por version o digest")
+          EOF
 
       - name: Todo servicio declara restart
         # Sin politica de reinicio, un proceso que muere deja el contenedor caido en silencio.

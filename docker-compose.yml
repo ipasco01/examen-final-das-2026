@@ -298,6 +298,11 @@ services:
       retries: 3
       start_period: 30s
     build: ./client-mobile-sim
+    # Equipo 5 (20/07): faltaba la clave `image`. Sin ella Docker inventa el nombre a partir del
+    # proyecto y le pone `:latest` -- exactamente lo que la politica prohibe. Se detecto leyendo
+    # la salida de un build ("naming to ...-client-sim:latest"), no por el lint del CI: ver el
+    # comentario del chequeo en .github/workflows/deployment-checks.yml.
+    image: ghcr.io/elcbas/client-sim:${IMAGE_TAG:-0ab70dc}
     container_name: client_sim_web
     restart: unless-stopped
     ports:
@@ -325,6 +330,8 @@ services:
       retries: 3
       start_period: 30s
     build: ./tracking-dashboard
+    # Mismo caso que client-sim: sin `image` explicita, Docker genera un `:latest`.
+    image: ghcr.io/elcbas/tracking-dashboard:${IMAGE_TAG:-0ab70dc}
     container_name: tracking_dashboard
     restart: unless-stopped
     ports:

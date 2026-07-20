@@ -111,6 +111,22 @@ la direccion del error -- las nueve veces anteriores el manifiesto de K8s iba at
 esta vez fue al reves. La leccion no es "revisar K8s", es que **cualquier entorno que no se
 ejecute se desincroniza**, sin importar cual.
 
+**Hallazgo del 20/07: dos servicios corrian con `:latest` y mi propio lint no lo veia.**
+`client-sim` y `tracking-dashboard` declaraban `build:` pero no `image:`. Docker les genera el
+nombre a partir del proyecto y le agrega `:latest` -- la deuda que este PR supuestamente habia
+cerrado. Se descubrio leyendo la salida de un `docker compose build`
+(`naming to ...-client-sim:latest`), no por el chequeo que existe para detectar justamente eso.
+
+**Por que el lint fallaba.** Hacia `docker compose config | grep "image:.*:latest"`. Un servicio
+sin clave `image:` no produce ninguna linea `image:` en esa salida -- comprobado. El grep no
+encontraba nada y el job pasaba en verde. **Un grep solo puede fallar sobre lo que esta escrito, y
+aca el caso peligroso era la AUSENCIA de una clave.**
+
+Lo revelador es que el chequeo de `restart`, tres lineas mas abajo en el mismo workflow, nunca
+tuvo este problema: parsea el YAML y pregunta `if 'restart' not in s`. Pregunta por la ausencia.
+La tecnica correcta ya estaba en el archivo; el error fue elegir un grep para el chequeo de al
+lado. Corregido: ahora ambos parsean el YAML.
+
 **Limite honesto de nuestro propio CI:** el job `arranque-real` NO habria detectado esto. El
 servicio arranca bien y responde `/metrics`; el fallo aparece recien en la primera notificacion que
 intenta deduplicar. Para atraparlo hace falta un test de integracion que ejercite el flujo, no solo
@@ -280,6 +296,7 @@ HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 | 11 | **Test de integracion que ejercite el flujo, no solo el arranque.** Limite comprobado de nuestro propio CI: el job `arranque-real` no habria detectado la BD faltante de `ms-notificaciones` ni el `JWT_SECRET` faltante, porque en los dos casos el proceso levanta y responde `/metrics`; el fallo aparece recien en la primera peticion real | Verificabilidad | Equipo 5 |
 | 12 | **Variables OTel ausentes en los 5 Deployments de K8s.** Ningun manifiesto define `OTEL_SERVICE_NAME` ni `OTEL_EXPORTER_OTLP_ENDPOINT`. `tracing.js` cae a su default `http://otel-collector:4317`, que en el cluster no resuelve (el collector solo existe en compose): el exportador reintenta en silencio y no hay trazas. No rompe el servicio, y por eso pasa desapercibido. Es la cara concreta de la deuda #1 | Observabilidad | Equipo 5 + Equipo 4 |
 | 13 | **`enviarEmail` en `ms-tutorias/src/infrastructure/clients/notificaciones.client.js` es codigo muerto y ademas incorrecto.** No lo invoca nadie (la Saga notifica por RabbitMQ), pero hace `axios.post(url, payload)` **sin cabecera `Authorization`**. Si alguien lo conectara, el `jwt.middleware` que el Equipo 2 monto en `POST /:canal` lo cortaria con 401 en el primer `if (!authHeader)`. O se borra el cliente, o se le propaga el token | Mantenibilidad | Equipo 1 + Equipo 2 |
+| 14 | **`materia` no se valida contra nada y no existe un catalogo de materias en el modelo.** Comprobado en ejecucion: se puede solicitar "Fisica Cuantica" al tutor `t09876`, cuya especialidad sembrada es "Calculo Multivariable", y la Saga responde `CONFIRMADA`. La causa de fondo es el modelo: `especialidad` es un `VARCHAR(255)` libre dentro de `tutores`, sin tabla de materias ni relacion tutor-materia, y un tutor solo puede tener una. Por eso tampoco se puede ofrecer un `<select>` en el cliente: no hay catalogo de donde poblarlo, y `ms-usuarios` solo expone `GET /tutores/:id` (busqueda por ID, no coleccion). **Recomendado:** validar `materia` contra la especialidad del tutor en `ejecutarSagaSolicitudTutoria`, despues de resolver al tutor y **antes** de crear la fila PENDIENTE -- es el ultimo punto sin efectos colaterales, asi el rechazo es un `throw` y no un rollback distribuido. Eso es una curita; la solucion real es un catalogo con relacion N:M | Modelo de dominio | Equipo 2 + Equipo 1 |
 
 ---
 
