@@ -42,7 +42,20 @@ app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 
 app.use(helmet());
 app.use(cors());
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }));
+// Equipo 5 (20/07): `skip` para /metrics y /health. El limitador protege de abuso de USUARIOS;
+// las probes del kubelet y el scrapeo de Prometheus no son usuarios. Sin esta exclusion, las
+// probes ya provocaron el hallazgo #19 (429 -> pod reiniciado cada ~10 min) y Prometheus queda a
+// un cambio de distancia del mismo problema: con scrape_interval de 15s hace 60 peticiones por
+// ventana y sobra margen, pero bajarlo a 5s --razonable para que los paneles se muevan en una
+// demo-- serian 180 contra un limite de 100, y los graficos empezarian a tener huecos sin que
+// nadie sepa por que. Se excluye el sintoma antes de que aparezca, no despues.
+app.use(rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.path === '/metrics' || req.path === '/health'
+}));
 
 const metricsMiddleware = promBundle({
     includeMethod: true,
