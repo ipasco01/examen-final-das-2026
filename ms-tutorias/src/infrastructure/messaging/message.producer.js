@@ -1,6 +1,7 @@
 // ms-tutorias/src/infrastructure/messaging/message.producer.js
 const amqp = require('amqplib');
 const { rabbitmqUrl } = require('../../config');
+const { injectTraceContext } = require('../../config/rabbitmq-propagation');
 
 let connection = null;
 let channel = null;
@@ -41,7 +42,7 @@ const publishTrackingEventStatus = async (payload) => {
     }
     try {
         const messageBuffer = Buffer.from(JSON.stringify(payload));
-        channel.publish(EXCHANGE_NAME, '', messageBuffer);
+        channel.publish(EXCHANGE_NAME, '', messageBuffer, { headers: injectTraceContext() });
         console.log(`[MS_Tutorias] Evento de tracking publicado:`, payload.message);
         return true;
     } catch (error) {
@@ -101,7 +102,7 @@ const publishToQueue = async (queueName, messagePayload) => {
         // RabbitMQ la hubiera persistido/ruteado realmente.
 
         //david :
-        channel.sendToQueue(queueName, messageBuffer, { persistent: true });
+        channel.sendToQueue(queueName, messageBuffer, { persistent: true, headers: injectTraceContext() });
         await channel.waitForConfirms(); // Espera a que el broker confirme la recepción del mensaje
 
         console.log(`[MS_Tutorias] Mensaje publicado y confirmado por el broker en la cola '${queueName}'`);

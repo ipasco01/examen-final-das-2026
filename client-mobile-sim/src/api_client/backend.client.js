@@ -59,4 +59,17 @@ const cancelarTutoria = async (idTutoria, token, correlationId) => {
     return response.data;
 };
 
-module.exports = { login, solicitarTutoria, listarTutorias, cancelarTutoria };
+const reprogramarTutoria = async (idTutoria, nuevaFecha, duracionMinutos, token, correlationId) => {
+    const url = `${apiBaseUrl}/v1/tutorias/${idTutoria}/reprogramar`;
+    console.log(`[CLIENT] ---> PATCH ${url} | Correlation-ID: ${correlationId}`);
+
+    const response = await axios.patch(url, { nuevaFecha, duracionMinutos }, {
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'X-Correlation-ID': correlationId
+        }
+    });
+    return response.data;
+};
+
+module.exports = { login, solicitarTutoria, listarTutorias, cancelarTutoria, reprogramarTutoria };

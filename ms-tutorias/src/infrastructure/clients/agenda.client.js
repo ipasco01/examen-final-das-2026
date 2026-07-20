@@ -3,6 +3,13 @@ const axios = require('axios');
 const CircuitBreaker = require('opossum');
 const { agendaServiceUrl } = require('../../config');
 const { publishTrackingEvent } = require('../messaging/message.producer');
+const { conReintentos } = require('./retry.util');
+
+// Reintentos con backoff exponencial + jitter ante caídas puntuales de ms-agenda (contenedor
+// reiniciando, blip de red) -- ver retry.util.js. Aplican a verificarDisponibilidad y
+// bloquearAgenda; nunca a una respuesta HTTP real (ej. 409) ni cuando el circuito ya está abierto.
+const RETRY_MAX_INTENTOS = Number(process.env.RETRY_AGENDA_MAX_INTENTOS || 3);
+const RETRY_BASE_DELAY_MS = Number(process.env.RETRY_AGENDA_BASE_DELAY_MS || 150);
 
 const breakerOptions = {
     timeout: 1500, // Si la petición tarda > 1.5s, se cancela (Timeout)
@@ -69,30 +76,45 @@ const fireRequest = async (method, url, correlationId, data, authHeader) => {
     }
 };
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 const verificarDisponibilidad = async (idTutor, fechaHora, correlationId, authHeader) => {
     const url = `${agendaServiceUrl}/tutores/${idTutor}/disponibilidad?fechaHora=${fechaHora}`;
 
-    try {
-        const data = await fireRequest('get', url, correlationId, undefined, authHeader);
-        return data.disponible;
-    } catch (error) {
-        // Retry único y acotado: es la primera llamada de la Saga y una lectura idempotente, así
-        // que vale la pena reintentar un fallo de red/timeout puntual. Nunca se reintenta ante una
-        // respuesta HTTP real (incluido el circuito abierto) para no enmascarar errores de negocio.
-        const esFalloDeRedOTimeout = !error.response && !isOpenCircuitError(error);
-        if (!esFalloDeRedOTimeout) throw error;
-
-        await sleep(150);
-        const data = await fireRequest('get', url, correlationId, undefined, authHeader);
-        return data.disponible;
-    }
+    // Lectura idempotente: vale la pena reintentar (backoff + jitter) un fallo de red/timeout
+    // puntual. Nunca se reintenta ante una respuesta HTTP real (incluido el circuito abierto) para
+    // no enmascarar errores de negocio -- ver conReintentos/esFalloDeInfraestructura.
+    const data = await conReintentos(
+        () => fireRequest('get', url, correlationId, undefined, authHeader),
+        {
+            maxIntentos: RETRY_MAX_INTENTOS,
+            baseDelayMs: RETRY_BASE_DELAY_MS,
+            isOpenCircuitError,
+            onIntentoFallido: (intento, error) => console.error(
+                `[Retry] ms-agenda (verificarDisponibilidad ${idTutor}) - CID: ${correlationId} - intento ${intento}/${RETRY_MAX_INTENTOS} falló: ${error.message}`
+            )
+        }
+    );
+    return data.disponible;
 };
 
 const bloquearAgenda = async (idTutor, payload, correlationId, authHeader) => {
     const url = `${agendaServiceUrl}/tutores/${idTutor}/bloquear`;
-    return fireRequest('post', url, correlationId, payload, authHeader);
+
+    // Igual criterio que verificarDisponibilidad: solo se reintenta un fallo de red/timeout
+    // puntual, nunca una respuesta HTTP real. La constraint única de ms-agenda (tutor+horario,
+    // ver agenda.controller.js) es la red de seguridad si un reintento llega a duplicar una
+    // petición que en realidad ya se había procesado del lado del servidor -- en ese caso el
+    // reintento recibe un 409 (no un doble bloqueo) y la Saga lo trata como error de negocio.
+    return conReintentos(
+        () => fireRequest('post', url, correlationId, payload, authHeader),
+        {
+            maxIntentos: RETRY_MAX_INTENTOS,
+            baseDelayMs: RETRY_BASE_DELAY_MS,
+            isOpenCircuitError,
+            onIntentoFallido: (intento, error) => console.error(
+                `[Retry] ms-agenda (bloquearAgenda ${idTutor}) - CID: ${correlationId} - intento ${intento}/${RETRY_MAX_INTENTOS} falló: ${error.message}`
+            )
+        }
+    );
 };
 
 const cancelarBloqueo = async (idBloqueo, correlationId, authHeader) => {

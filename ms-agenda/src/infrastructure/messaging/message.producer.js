@@ -1,6 +1,7 @@
 // ms-agenda/src/infrastructure/messaging/message.producer.js
 const amqp = require('amqplib');
 const { rabbitmqUrl } = require('../../config');
+const { injectTraceContext } = require('../../config/rabbitmq-propagation');
 
 let channel = null;
 const EXCHANGE_NAME = 'tracking_events_exchange';
@@ -25,7 +26,7 @@ const publishTrackingEvent = async (payload) => {
     if (!channel) { return; }
     try {
         const messageBuffer = Buffer.from(JSON.stringify(payload));
-        channel.publish(EXCHANGE_NAME, '', messageBuffer);
+        channel.publish(EXCHANGE_NAME, '', messageBuffer, { headers: injectTraceContext() });
     } catch (error) {
         console.error(`[MS_Agenda] Error al publicar evento de tracking:`, error.message);
     }

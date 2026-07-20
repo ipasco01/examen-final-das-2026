@@ -12,8 +12,17 @@ const amqp = require('amqplib');
 const notificacionService = require('./domain/services/notificacion.service'); //  Importar el servicio de notificaciones
 const messageProducer = require('./infrastructure/messaging/message.producer'); // <-- IMPORTAR PRODUCTOR
 const promBundle = require("express-prom-bundle");
+const { trace } = require('@opentelemetry/api');
+const { runWithExtractedContext } = require('./config/rabbitmq-propagation');
 
 const RABBITMQ_RETRY_DELAY_MS = 5000;
+
+// David: SE AGREGA. Cuántas veces se reintenta un mensaje antes de darlo
+// por perdido y mandarlo a la DLQ. Es una variable de entorno (no un
+// número fijo en el código) para poder ajustarla sin tener que redesplegar,
+// igual que hicieron en tutoria.service.js con COMPENSACION_AGENDA_MAX_INTENTOS.
+const MAX_REINTENTOS = Number(process.env.NOTIFICACIONES_MAX_REINTENTOS || 3);
+
 
 const app = express();
 
@@ -68,39 +77,116 @@ const startConsumer = async () => {
         console.log(`[MS_Notificaciones] Esperando mensajes en la cola: ${queueName}`);
         console.log(`[MS_Notificaciones] DLQ configurada: ${queueName} -> ${dlxName} -> ${dlqName}`);
 
+        const tracer = trace.getTracer('ms-notificaciones');
+
         channel.consume(queueName, async (msg) => {
             if (msg !== null) {
+                // runWithExtractedContext reconecta este mensaje con el trace_id que venía en
+                // msg.properties.headers (inyectado por ms-tutorias al publicar). Sin esto, todo
+                // lo que pase acá adentro arrancaría una traza nueva y desconectada en Tempo.
+                await runWithExtractedContext(msg, () => tracer.startActiveSpan(
+                    'procesar notificacion.email',
+                    async (span) => {
+                        let payload;
+                        try {
+                            // 1. Parsear el mensaje
+                            payload = JSON.parse(msg.content.toString());
+                            console.log(`[MS_Notificaciones] Mensaje recibido de RabbitMQ:`, JSON.stringify(payload));
+
+                            // 2. Procesar el mensaje usando nuestro servicio
+                            await notificacionService.enviarEmailNotificacion(payload);
+
+                            // 3. Confirmar (ack) que el mensaje fue procesado exitosamente
+                            channel.ack(msg);
+                            console.log(`[MS_Notificaciones] Mensaje procesado y confirmado (ack).`);
+
+                        } catch (error) {
+                            const rawMessage = msg.content.toString();
+                            console.error(`[MS_Notificaciones] Error al procesar mensaje: ${error.message}`, payload || rawMessage);
+                            span.recordException(error);
+
+
+                            const esErrorDeValidacion = error.statusCode === 400;
+                            const reintentosPrevios =
+                                (msg.properties.headers && msg.properties.headers['x-reintentos']) || 0;
+
+                            if (esErrorDeValidacion || reintentosPrevios >= MAX_REINTENTOS) {
+                                channel.nack(msg, false, false);
+                                console.log(
+                                    `[MS_Notificaciones] Mensaje descartado a DLQ (${dlqName}). ` +
+                                    `Motivo: ${esErrorDeValidacion ? 'error de validación' : 'reintentos agotados'} ` +
+                                    `(reintentos previos: ${reintentosPrevios}).`
+                                );
+                            } else {
+                                // David: confirmamos (ack) el mensaje viejo y publicamos
+                                // uno NUEVO con el contador de reintentos incrementado.
+                                // No es "reenviar la misma carta" -- es "escribir la
+                                // misma carta de nuevo, pero anotando en la esquina
+                                // 'este es el intento número 2'".
+                                //
+                                // Ojo: se parte de los headers ORIGINALES (msg.properties.headers)
+                                // en vez de crear un objeto nuevo desde cero -- así el 'traceparent'
+                                // inyectado por ms-tutorias sobrevive a los reintentos, y no se
+                                // "corta" la traza en Tempo cada vez que un mensaje se reencola.
+                                channel.ack(msg);
+                                channel.sendToQueue(queueName, msg.content, {
+                                    persistent: true,
+                                    headers: {
+                                        ...(msg.properties.headers || {}),
+                                        'x-reintentos': reintentosPrevios + 1
+                                    }
+                                });
+                                console.log(
+                                    `[MS_Notificaciones] Mensaje reencolado para reintento ` +
+                                    `${reintentosPrevios + 1}/${MAX_REINTENTOS}.`
+                                );
+                            }
+                        } finally {
+                            span.end();
+                        }
+                    }
+                ));
+            }
+        }, { noAck: false });
+    
+    
+        // Consumidor de la DLQ (ya resuelto en una iteración anterior).
+        channel.consume(dlqName, (msg) => {
+            if (msg !== null) {
+                const rawMessage = msg.content.toString();
                 let payload;
                 try {
-                    // 1. Parsear el mensaje
-                    payload = JSON.parse(msg.content.toString());
-                    console.log(`[MS_Notificaciones] Mensaje recibido de RabbitMQ:`, JSON.stringify(payload));
-
-                    // 2. Procesar el mensaje usando nuestro servicio
-                    await notificacionService.enviarEmailNotificacion(payload);
-
-                    // 3. Confirmar (ack) que el mensaje fue procesado exitosamente
-                    channel.ack(msg);
-                    console.log(`[MS_Notificaciones] Mensaje procesado y confirmado (ack).`);
-
-                } catch (error) {
-                    const rawMessage = msg.content.toString();
-                    console.error(`[MS_Notificaciones] Error al procesar mensaje: ${error.message}`, payload || rawMessage);
-                    // 4. Rechazar (nack) el mensaje. false = no volver a encolar.
-                    // RabbitMQ lo enviará a la DLQ configurada en la cola principal.
-                    channel.nack(msg, false, false);
-                    console.log(`[MS_Notificaciones] Mensaje rechazado (nack) y enviado a DLQ: ${dlqName}.`);
+                    payload = JSON.parse(rawMessage);
+                } catch {
+                    payload = null;
                 }
+
+                const cid = payload?.correlationId || 'N/A';
+
+                console.error(
+                    `[MS_Notificaciones][DLQ] Mensaje en dead-letter (${dlqName}). CID: ${cid}`,
+                    payload || rawMessage
+                );
+
+                messageProducer.track(
+                    cid,
+                    `Mensaje enviado a DLQ (${dlqName}): requiere revisión manual`,
+                    'ERROR'
+                );
+
+                channel.ack(msg);
             }
         }, {
-            noAck: false // Importante: Requerimos confirmación manual (ack/nack)
+            noAck: false
         });
 
     } catch (error) {
         console.error('[MS_Notificaciones] Error al conectar/consumir de RabbitMQ:', error.message);
-        setTimeout(startConsumer, RABBITMQ_RETRY_DELAY_MS); // Reintentar conexión en 5 segundos
+        setTimeout(startConsumer, RABBITMQ_RETRY_DELAY_MS);
     }
 };
+
+
 
 if (require.main === module) {
     // Iniciar el servidor y el consumidor de RabbitMQ

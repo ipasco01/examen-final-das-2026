@@ -53,6 +53,9 @@ const loadAgendaClientWithStubs = () => {
     const axiosStub = createFakeAxios();
     const trackingEvents = [];
 
+    // Delay base mínimo para que los tests de reintentos (backoff + jitter) no queden lentos.
+    process.env.RETRY_AGENDA_BASE_DELAY_MS = '1';
+
     require.cache[axiosPath] = {
         id: axiosPath,
         filename: axiosPath,
@@ -98,6 +101,7 @@ const withFreshAgendaClient = async (fn) => {
         clearModule(agendaClientPath);
         delete require.cache[axiosPath];
         delete require.cache[messageProducerPath];
+        delete process.env.RETRY_AGENDA_BASE_DELAY_MS;
     }
 };
 
@@ -171,7 +175,7 @@ test('fallos de cancelarBloqueo no afectan el estado del breaker compartido', as
     });
 });
 
-test('verificarDisponibilidad reintenta una vez ante un fallo de red y luego tiene éxito', async () => {
+test('verificarDisponibilidad reintenta (backoff + jitter) ante un fallo de red y luego tiene éxito', async () => {
     await withFreshAgendaClient(async ({ agendaClient, axiosStub }) => {
         let intentos = 0;
         axiosStub.setRequestImpl(async () => {
@@ -183,6 +187,37 @@ test('verificarDisponibilidad reintenta una vez ante un fallo de red y luego tie
         const disponible = await agendaClient.verificarDisponibilidad('t1', '2026-01-01T00:00:00.000Z', 'cid-4');
 
         assert.equal(disponible, false);
+        assert.equal(intentos, 2);
+    });
+});
+
+test('verificarDisponibilidad se rinde tras agotar los 3 intentos ante fallos de red persistentes', async () => {
+    await withFreshAgendaClient(async ({ agendaClient, axiosStub }) => {
+        axiosStub.setRequestImpl(async () => { throw networkError(); });
+
+        await assert.rejects(
+            () => agendaClient.verificarDisponibilidad('t1', '2026-01-01T00:00:00.000Z', 'cid-5'),
+            (error) => !error.response // el 3er intento se agota como fallo de red crudo, no como 503 sintético de breaker abierto
+        );
+
+        // volumeThreshold=2 hace que el breaker se abra en el 2do intento -- el 3ro falla rápido
+        // sin llegar a axios, así que solo deben verse 2 llamadas reales.
+        assert.equal(axiosStub.calls.request.length, 2);
+    });
+});
+
+test('bloquearAgenda reintenta (backoff + jitter) ante un fallo de red y luego tiene éxito', async () => {
+    await withFreshAgendaClient(async ({ agendaClient, axiosStub }) => {
+        let intentos = 0;
+        axiosStub.setRequestImpl(async () => {
+            intentos += 1;
+            if (intentos === 1) throw networkError();
+            return { data: { idBloqueo: 'b-1' } };
+        });
+
+        const resultado = await agendaClient.bloquearAgenda('t1', {}, 'cid-6');
+
+        assert.equal(resultado.idBloqueo, 'b-1');
         assert.equal(intentos, 2);
     });
 });

@@ -1,0 +1,732 @@
+From 586bdf85e0e9b7acc527cca3f2a9269bb27302e1 Mon Sep 17 00:00:00 2001
+From: Freddy Amaya <freddyamadi@gmail.com>
+Date: Sun, 19 Jul 2026 13:51:11 -0500
+Subject: [PATCH 2/3] Observabilidad. Implmentando mejoras_Part2
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Implementación de herramientas:
+Loki
+Promtail
+Otel-Collector
+Tempo
+Agregando al docker-compose y añadiendo configuración dentro de los 5 servicios
+---
+ docker-compose.yml                            | 49 ++++++++++++++++++
+ .../provisioning/datasources/datasources.yaml | 21 ++++++++
+ ms-agenda/package.json                        |  2 +
+ .../src/api/middlewares/requestLogger.js      | 27 ++++++++++
+ ms-agenda/src/app.js                          |  2 +
+ ms-agenda/src/config/logger.js                | 14 ++++++
+ ms-auth/package.json                          |  2 +
+ .../middlewares/correlationId.middleware.js   | 10 ++++
+ ms-auth/src/api/middlewares/requestLogger.js  | 30 +++++++++++
+ ms-auth/src/app.js                            |  4 ++
+ ms-auth/src/config/logger.js                  | 14 ++++++
+ ms-notificaciones/package.json                |  2 +
+ .../src/api/middlewares/requestLogger.js      | 27 ++++++++++
+ ms-notificaciones/src/app.js                  |  2 +
+ ms-notificaciones/src/config/logger.js        | 14 ++++++
+ ms-tutorias/package.json                      |  2 +
+ .../src/api/middlewares/requestLogger.js      | 27 ++++++++++
+ ms-tutorias/src/app.js                        |  2 +
+ ms-tutorias/src/config/logger.js              | 14 ++++++
+ ms-usuarios/package.json                      |  2 +
+ .../src/api/middlewares/requestLogger.js      | 27 ++++++++++
+ ms-usuarios/src/app.js                        |  4 +-
+ ms-usuarios/src/config/logger.js              | 14 ++++++
+ otel-collector-config.yaml                    | 27 ++++++++++
+ promtail-config.yaml                          | 50 +++++++++++++++++++
+ tempo.yaml                                    | 23 +++++++++
+ 26 files changed, 411 insertions(+), 1 deletion(-)
+ create mode 100644 grafana/provisioning/datasources/datasources.yaml
+ create mode 100644 ms-agenda/src/config/logger.js
+ create mode 100644 ms-auth/src/api/middlewares/correlationId.middleware.js
+ create mode 100644 ms-auth/src/api/middlewares/requestLogger.js
+ create mode 100644 ms-auth/src/config/logger.js
+ create mode 100644 ms-notificaciones/src/config/logger.js
+ create mode 100644 ms-tutorias/src/config/logger.js
+ create mode 100644 ms-usuarios/src/config/logger.js
+ create mode 100644 otel-collector-config.yaml
+ create mode 100644 promtail-config.yaml
+ create mode 100644 tempo.yaml
+
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 9c77dde..19dd2e9 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -206,8 +206,56 @@ services:
+       - "3005:3000" # Mapeamos al 3005 para no chocar con ms-tutorias (3000)
+     environment:
+       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-local-dev-admin} # Contraseña inicial local
++    volumes:
++      - ./grafana/provisioning:/etc/grafana/provisioning
+     depends_on:
+       - prometheus
++      - loki
++
++#logs centralizados (loki + Promtail)
++
++  loki:
++    image: grafana/loki:2.9.4
++    container_name: loki
++    ports:
++      - "3100:3100" # API de Loki (para pegar "queries" directo)
++    command: -config.file=/etc/loki/local-config.yaml
++
++  promtail:
++    image: grafana/promtail:2.9.4
++    container_name: promtail
++    volumes:
++      # Necesita leer el socket de Docker para descubrir qué contenedores existen,
++      # y la carpeta donde Docker guarda los logs (driver json-file, el default).
++      - /var/run/docker.sock:/var/run/docker.sock:ro
++      - /var/lib/docker/containers:/var/lib/docker/containers:ro
++      - ./promtail-config.yaml:/etc/promtail/config.yml:ro
++    command: -config.file=/etc/promtail/config.yml
++    depends_on:
++      - loki
++
++  # --- Trazas distribuidas (OTel Collector + Tempo) ---
++  otel-collector:
++    image: otel/opentelemetry-collector-contrib:0.108.0
++    container_name: otel-collector
++    command: ["--config=/etc/otel-collector-config.yaml"]
++    volumes:
++      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
++    ports:
++      - "4317:4317" # OTLP gRPC: los microservicios apuntan acá (OTEL_EXPORTER_OTLP_ENDPOINT)
++      - "4318:4318" # OTLP HTTP: alternativa al gRPC, útil para probar con curl
++    depends_on:
++      - tempo
++
++  tempo:
++    image: grafana/tempo:2.5.0
++    container_name: tempo
++    command: ["-config.file=/etc/tempo.yaml"]
++    volumes:
++      - ./tempo.yaml:/etc/tempo.yaml:ro
++      - tempo_data:/tmp/tempo
++    ports:
++      - "3200:3200" # API HTTP: Grafana consulta las trazas acá
+ 
+ # --- Definición de Volúmenes ---
+ volumes:
+@@ -215,3 +263,4 @@ volumes:
+   postgres_data_agenda:
+   postgres_data_tutorias:
+   rabbitmq_data:
++  tempo_data:
+\ No newline at end of file
+diff --git a/grafana/provisioning/datasources/datasources.yaml b/grafana/provisioning/datasources/datasources.yaml
+new file mode 100644
+index 0000000..05a50be
+--- /dev/null
++++ b/grafana/provisioning/datasources/datasources.yaml
+@@ -0,0 +1,21 @@
++apiVersion: 1
++ 
++datasources:
++  - name: Prometheus
++    type: prometheus
++    access: proxy
++    url: http://prometheus:9090
++    isDefault: true
++    editable: true
++ 
++  - name: Loki
++    type: loki
++    access: proxy
++    url: http://loki:3100
++    editable: true
++ 
++  - name: Tempo
++    type: tempo
++    access: proxy
++    url: http://tempo:3200
++    editable: true
+\ No newline at end of file
+diff --git a/ms-agenda/package.json b/ms-agenda/package.json
+index 1cfeb30..1d054fa 100644
+--- a/ms-agenda/package.json
++++ b/ms-agenda/package.json
+@@ -11,6 +11,8 @@
+   "author": "edsaana",
+   "license": "ISC",
+   "dependencies": {
++    "pino": "^9.5.0",
++    "pino-http": "^10.3.0",
+     "amqplib": "^0.10.9",
+     "dotenv": "^17.2.3",
+     "express": "^4.21.2",
+diff --git a/ms-agenda/src/api/middlewares/requestLogger.js b/ms-agenda/src/api/middlewares/requestLogger.js
+index e69de29..25fad15 100644
+--- a/ms-agenda/src/api/middlewares/requestLogger.js
++++ b/ms-agenda/src/api/middlewares/requestLogger.js
+@@ -0,0 +1,27 @@
++const pinoHttp = require('pino-http');
++const logger = require('../../config/logger');
++
++const requestLogger = pinoHttp({
++    logger,
++    // customProps inyecta campos extra en la línea de log de CADA request.
++    // Aquí es donde el correlationId entra al log: sin esto, Loki nunca
++    // podría filtrar logs de este servicio por ese id.
++    customProps: (req) => ({
++        correlationId: req.correlationId,
++    }),
++    // El endpoint /metrics lo scrapea Prometheus cada 5s: si lo logueamos,
++    // ensuciamos Loki con ruido que no aporta nada para debug.
++    autoLogging: {
++        ignore: (req) => req.url === '/metrics',
++    },
++    // Pino-http por defecto loguea todo como "info". Esto sube el nivel
++    // automáticamente si la respuesta fue error, para que sea más fácil
++    // filtrar por severidad en Grafana.
++    customLogLevel: (req, res, err) => {
++        if (res.statusCode >= 500 || err) return 'error';
++        if (res.statusCode >= 400) return 'warn';
++        return 'info';
++    },
++});
++
++module.exports = requestLogger;
+\ No newline at end of file
+diff --git a/ms-agenda/src/app.js b/ms-agenda/src/app.js
+index f5037d5..113137e 100644
+--- a/ms-agenda/src/app.js
++++ b/ms-agenda/src/app.js
+@@ -4,6 +4,7 @@ const config = require('./config'); // <-- USAR EL NUEVO CONFIG
+ const agendaRouter = require('./api/routes/agenda.routes');
+ const errorHandler = require('./api/middlewares/errorHandler');
+ const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
++const requestLogger = require('./api/middlewares/requestLogger.js');
+ const messageProducer = require('./infrastructure/messaging/message.producer'); // <-- IMPORTAR PRODUCTOR
+ const promBundle = require("express-prom-bundle");
+ 
+@@ -24,6 +25,7 @@ app.use(metricsMiddleware);
+ 
+ app.use(express.json());
+ app.use(correlationIdMiddleware);
++app.use(requestLogger);
+ app.use('/agenda', agendaRouter);
+ app.use(errorHandler);
+ 
+diff --git a/ms-agenda/src/config/logger.js b/ms-agenda/src/config/logger.js
+new file mode 100644
+index 0000000..2b03b63
+--- /dev/null
++++ b/ms-agenda/src/config/logger.js
+@@ -0,0 +1,14 @@
++const pino = require('pino');
++
++const logger = pino({
++    level: process.env.LOG_LEVEL || 'info',
++    // "base" agrega estos campos a TODAS las líneas que emita este logger,
++    // sin que cada llamada a logger.info(...) tenga que repetirlos.
++    base: {
++        service: process.env.SERVICE_NAME || 'unknown_service',
++    },
++    // Timestamp en formato ISO legible (por defecto Pino usa epoch en ms).
++    timestamp: pino.stdTimeFunctions.isoTime,
++});
++
++module.exports = logger;
+\ No newline at end of file
+diff --git a/ms-auth/package.json b/ms-auth/package.json
+index 78a3f1c..001a6d2 100644
+--- a/ms-auth/package.json
++++ b/ms-auth/package.json
+@@ -11,6 +11,8 @@
+   "author": "edsaana",
+   "license": "ISC",
+   "dependencies": {
++    "pino": "^9.5.0",
++    "pino-http": "^10.3.0",
+     "bcryptjs": "^2.4.3",
+     "dotenv": "^16.6.1",
+     "express": "^4.21.2",
+diff --git a/ms-auth/src/api/middlewares/correlationId.middleware.js b/ms-auth/src/api/middlewares/correlationId.middleware.js
+new file mode 100644
+index 0000000..5a85236
+--- /dev/null
++++ b/ms-auth/src/api/middlewares/correlationId.middleware.js
+@@ -0,0 +1,10 @@
++const { randomUUID } = require('crypto');
++
++const correlationIdMiddleware = (req, res, next) => {
++    const correlationId = req.header('X-Correlation-ID') || randomUUID();
++    req.correlationId = correlationId;
++    res.setHeader('X-Correlation-ID', correlationId);
++    next();
++};
++
++module.exports = correlationIdMiddleware;
+\ No newline at end of file
+diff --git a/ms-auth/src/api/middlewares/requestLogger.js b/ms-auth/src/api/middlewares/requestLogger.js
+new file mode 100644
+index 0000000..8ee5a99
+--- /dev/null
++++ b/ms-auth/src/api/middlewares/requestLogger.js
+@@ -0,0 +1,30 @@
++// src/api/middlewares/requestLogger.js
++// Debe montarse DESPUES de correlationId.middleware.js, porque depende
++// de que req.correlationId ya exista.
++const pinoHttp = require('pino-http');
++const logger = require('../../config/logger');
++
++const requestLogger = pinoHttp({
++    logger,
++    // customProps inyecta campos extra en la línea de log de CADA request.
++    // Aquí es donde el correlationId entra al log: sin esto, Loki nunca
++    // podría filtrar logs de este servicio por ese id.
++    customProps: (req) => ({
++        correlationId: req.correlationId,
++    }),
++    // El endpoint /metrics lo scrapea Prometheus cada 5s: si lo logueamos,
++    // ensuciamos Loki con ruido que no aporta nada para debug.
++    autoLogging: {
++        ignore: (req) => req.url === '/metrics',
++    },
++    // Pino-http por defecto loguea todo como "info". Esto sube el nivel
++    // automáticamente si la respuesta fue error, para que sea más fácil
++    // filtrar por severidad en Grafana.
++    customLogLevel: (req, res, err) => {
++        if (res.statusCode >= 500 || err) return 'error';
++        if (res.statusCode >= 400) return 'warn';
++        return 'info';
++    },
++});
++
++module.exports = requestLogger;
+\ No newline at end of file
+diff --git a/ms-auth/src/app.js b/ms-auth/src/app.js
+index b83191e..b5a7457 100644
+--- a/ms-auth/src/app.js
++++ b/ms-auth/src/app.js
+@@ -4,6 +4,8 @@ const express = require('express');
+ const config = require('./config');
+ const authRouter = require('./api/routes/auth.routes'); // Importa el enrutador
+ const errorHandler = require('./api/middlewares/errorHandler');
++const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
++const requestLogger = require('./api/middlewares/requestLogger.js');
+ const promBundle = require("express-prom-bundle");
+ 
+ const app = express();
+@@ -22,6 +24,8 @@ const metricsMiddleware = promBundle({
+ app.use(metricsMiddleware);
+ 
+ app.use(express.json());
++app.use(correlationIdMiddleware);
++app.use(requestLogger);
+ 
+ // Aquí se usa la variable 'authRouter'. Si el archivo importado no exporta
+ // una función, aquí es donde Express falla.
+diff --git a/ms-auth/src/config/logger.js b/ms-auth/src/config/logger.js
+new file mode 100644
+index 0000000..2b03b63
+--- /dev/null
++++ b/ms-auth/src/config/logger.js
+@@ -0,0 +1,14 @@
++const pino = require('pino');
++
++const logger = pino({
++    level: process.env.LOG_LEVEL || 'info',
++    // "base" agrega estos campos a TODAS las líneas que emita este logger,
++    // sin que cada llamada a logger.info(...) tenga que repetirlos.
++    base: {
++        service: process.env.SERVICE_NAME || 'unknown_service',
++    },
++    // Timestamp en formato ISO legible (por defecto Pino usa epoch en ms).
++    timestamp: pino.stdTimeFunctions.isoTime,
++});
++
++module.exports = logger;
+\ No newline at end of file
+diff --git a/ms-notificaciones/package.json b/ms-notificaciones/package.json
+index 00b8d6b..ee106e3 100644
+--- a/ms-notificaciones/package.json
++++ b/ms-notificaciones/package.json
+@@ -11,6 +11,8 @@
+   "author": "edsaana",
+   "license": "ISC",
+   "dependencies": {
++    "pino": "^9.5.0",
++    "pino-http": "^10.3.0",
+     "amqplib": "^0.10.9",
+     "dotenv": "^17.2.3",
+     "express": "^4.21.2",
+diff --git a/ms-notificaciones/src/api/middlewares/requestLogger.js b/ms-notificaciones/src/api/middlewares/requestLogger.js
+index e69de29..25fad15 100644
+--- a/ms-notificaciones/src/api/middlewares/requestLogger.js
++++ b/ms-notificaciones/src/api/middlewares/requestLogger.js
+@@ -0,0 +1,27 @@
++const pinoHttp = require('pino-http');
++const logger = require('../../config/logger');
++
++const requestLogger = pinoHttp({
++    logger,
++    // customProps inyecta campos extra en la línea de log de CADA request.
++    // Aquí es donde el correlationId entra al log: sin esto, Loki nunca
++    // podría filtrar logs de este servicio por ese id.
++    customProps: (req) => ({
++        correlationId: req.correlationId,
++    }),
++    // El endpoint /metrics lo scrapea Prometheus cada 5s: si lo logueamos,
++    // ensuciamos Loki con ruido que no aporta nada para debug.
++    autoLogging: {
++        ignore: (req) => req.url === '/metrics',
++    },
++    // Pino-http por defecto loguea todo como "info". Esto sube el nivel
++    // automáticamente si la respuesta fue error, para que sea más fácil
++    // filtrar por severidad en Grafana.
++    customLogLevel: (req, res, err) => {
++        if (res.statusCode >= 500 || err) return 'error';
++        if (res.statusCode >= 400) return 'warn';
++        return 'info';
++    },
++});
++
++module.exports = requestLogger;
+\ No newline at end of file
+diff --git a/ms-notificaciones/src/app.js b/ms-notificaciones/src/app.js
+index 07b9c1f..5b8c978 100644
+--- a/ms-notificaciones/src/app.js
++++ b/ms-notificaciones/src/app.js
+@@ -4,6 +4,7 @@ const config = require('./config');
+ const notificacionesRouter = require('./api/routes/notificaciones.routes');
+ const errorHandler = require('./api/middlewares/errorHandler'); // Reutilizamos el mismo middleware
+ const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
++const requestLogger = require('./api/middlewares/requestLogger.js');
+ const amqp = require('amqplib');
+ const notificacionService = require('./domain/services/notificacion.service'); //  Importar el servicio de notificaciones
+ const messageProducer = require('./infrastructure/messaging/message.producer'); // <-- IMPORTAR PRODUCTOR
+@@ -28,6 +29,7 @@ app.use(metricsMiddleware);
+ 
+ app.use(express.json());
+ app.use(correlationIdMiddleware); // Middleware para manejar el Correlation ID
++app.use(requestLogger);
+ app.use('/notificaciones', notificacionesRouter);
+ 
+ app.use(errorHandler);
+diff --git a/ms-notificaciones/src/config/logger.js b/ms-notificaciones/src/config/logger.js
+new file mode 100644
+index 0000000..2b03b63
+--- /dev/null
++++ b/ms-notificaciones/src/config/logger.js
+@@ -0,0 +1,14 @@
++const pino = require('pino');
++
++const logger = pino({
++    level: process.env.LOG_LEVEL || 'info',
++    // "base" agrega estos campos a TODAS las líneas que emita este logger,
++    // sin que cada llamada a logger.info(...) tenga que repetirlos.
++    base: {
++        service: process.env.SERVICE_NAME || 'unknown_service',
++    },
++    // Timestamp en formato ISO legible (por defecto Pino usa epoch en ms).
++    timestamp: pino.stdTimeFunctions.isoTime,
++});
++
++module.exports = logger;
+\ No newline at end of file
+diff --git a/ms-tutorias/package.json b/ms-tutorias/package.json
+index 4407e0c..560e170 100644
+--- a/ms-tutorias/package.json
++++ b/ms-tutorias/package.json
+@@ -11,6 +11,8 @@
+   "author": "edsaana",
+   "license": "ISC",
+   "dependencies": {
++    "pino": "^9.5.0",
++    "pino-http": "^10.3.0",
+     "amqplib": "^0.10.9",
+     "axios": "^1.13.1",
+     "dotenv": "^16.6.1",
+diff --git a/ms-tutorias/src/api/middlewares/requestLogger.js b/ms-tutorias/src/api/middlewares/requestLogger.js
+index e69de29..25fad15 100644
+--- a/ms-tutorias/src/api/middlewares/requestLogger.js
++++ b/ms-tutorias/src/api/middlewares/requestLogger.js
+@@ -0,0 +1,27 @@
++const pinoHttp = require('pino-http');
++const logger = require('../../config/logger');
++
++const requestLogger = pinoHttp({
++    logger,
++    // customProps inyecta campos extra en la línea de log de CADA request.
++    // Aquí es donde el correlationId entra al log: sin esto, Loki nunca
++    // podría filtrar logs de este servicio por ese id.
++    customProps: (req) => ({
++        correlationId: req.correlationId,
++    }),
++    // El endpoint /metrics lo scrapea Prometheus cada 5s: si lo logueamos,
++    // ensuciamos Loki con ruido que no aporta nada para debug.
++    autoLogging: {
++        ignore: (req) => req.url === '/metrics',
++    },
++    // Pino-http por defecto loguea todo como "info". Esto sube el nivel
++    // automáticamente si la respuesta fue error, para que sea más fácil
++    // filtrar por severidad en Grafana.
++    customLogLevel: (req, res, err) => {
++        if (res.statusCode >= 500 || err) return 'error';
++        if (res.statusCode >= 400) return 'warn';
++        return 'info';
++    },
++});
++
++module.exports = requestLogger;
+\ No newline at end of file
+diff --git a/ms-tutorias/src/app.js b/ms-tutorias/src/app.js
+index edb4973..aff6b7d 100644
+--- a/ms-tutorias/src/app.js
++++ b/ms-tutorias/src/app.js
+@@ -5,6 +5,7 @@ const config = require('./config'); // Importamos nuestra configuración central
+ const tutoriasRouter = require('./api/routes/tutorias.routes');
+ const errorHandler = require('./api/middlewares/errorHandler'); // El manejador de errores reutilizable
+ const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
++const requestLogger = require('./api/middlewares/requestLogger.js');
+ const promBundle = require("express-prom-bundle");
+ const messageProducer = require('./infrastructure/messaging/message.producer');
+ const outboxPublisher = require('./infrastructure/messaging/outbox.publisher');
+@@ -28,6 +29,7 @@ app.use(metricsMiddleware);
+ // Middlewares esenciales
+ app.use(express.json()); // Permite al servidor entender y procesar bodies en formato JSON
+ app.use(correlationIdMiddleware); // Añadimos el middleware de correlationIdMiddleware
++app.use(requestLogger);
+ 
+ // Enrutamiento principal
+ // Cualquier petición a "/tutorias" será gestionada por nuestro router.
+diff --git a/ms-tutorias/src/config/logger.js b/ms-tutorias/src/config/logger.js
+new file mode 100644
+index 0000000..2b03b63
+--- /dev/null
++++ b/ms-tutorias/src/config/logger.js
+@@ -0,0 +1,14 @@
++const pino = require('pino');
++
++const logger = pino({
++    level: process.env.LOG_LEVEL || 'info',
++    // "base" agrega estos campos a TODAS las líneas que emita este logger,
++    // sin que cada llamada a logger.info(...) tenga que repetirlos.
++    base: {
++        service: process.env.SERVICE_NAME || 'unknown_service',
++    },
++    // Timestamp en formato ISO legible (por defecto Pino usa epoch en ms).
++    timestamp: pino.stdTimeFunctions.isoTime,
++});
++
++module.exports = logger;
+\ No newline at end of file
+diff --git a/ms-usuarios/package.json b/ms-usuarios/package.json
+index 2aa58af..9039e3c 100644
+--- a/ms-usuarios/package.json
++++ b/ms-usuarios/package.json
+@@ -16,6 +16,8 @@
+   "author": "edsaana",
+   "license": "ISC",
+   "dependencies": {
++    "pino": "^9.5.0",
++    "pino-http": "^10.3.0",
+     "amqplib": "^0.10.9",
+     "dotenv": "^17.2.3",
+     "express": "^4.21.2",
+diff --git a/ms-usuarios/src/api/middlewares/requestLogger.js b/ms-usuarios/src/api/middlewares/requestLogger.js
+index e69de29..25fad15 100644
+--- a/ms-usuarios/src/api/middlewares/requestLogger.js
++++ b/ms-usuarios/src/api/middlewares/requestLogger.js
+@@ -0,0 +1,27 @@
++const pinoHttp = require('pino-http');
++const logger = require('../../config/logger');
++
++const requestLogger = pinoHttp({
++    logger,
++    // customProps inyecta campos extra en la línea de log de CADA request.
++    // Aquí es donde el correlationId entra al log: sin esto, Loki nunca
++    // podría filtrar logs de este servicio por ese id.
++    customProps: (req) => ({
++        correlationId: req.correlationId,
++    }),
++    // El endpoint /metrics lo scrapea Prometheus cada 5s: si lo logueamos,
++    // ensuciamos Loki con ruido que no aporta nada para debug.
++    autoLogging: {
++        ignore: (req) => req.url === '/metrics',
++    },
++    // Pino-http por defecto loguea todo como "info". Esto sube el nivel
++    // automáticamente si la respuesta fue error, para que sea más fácil
++    // filtrar por severidad en Grafana.
++    customLogLevel: (req, res, err) => {
++        if (res.statusCode >= 500 || err) return 'error';
++        if (res.statusCode >= 400) return 'warn';
++        return 'info';
++    },
++});
++
++module.exports = requestLogger;
+\ No newline at end of file
+diff --git a/ms-usuarios/src/app.js b/ms-usuarios/src/app.js
+index 14859c6..3e37909 100644
+--- a/ms-usuarios/src/app.js
++++ b/ms-usuarios/src/app.js
+@@ -4,6 +4,8 @@ const config = require('./config'); // <-- USAR EL NUEVO CONFIG
+ const usuariosRouter = require('./api/routes/usuarios.routes');
+ const errorHandler = require('./api/middlewares/errorHandler');
+ const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
++
++const requestLogger = require('./api/middlewares/requestLogger.js');
+ const messageProducer = require('./infrastructure/messaging/message.producer'); // <-- IMPORTAR PRODUCTOR
+ const promBundle = require("express-prom-bundle");
+ 
+@@ -24,7 +26,7 @@ app.use(metricsMiddleware);
+ 
+ app.use(express.json());
+ app.use(correlationIdMiddleware);
+-
++app.use(requestLogger);
+ app.use('/usuarios', usuariosRouter);
+ 
+ app.use(errorHandler);
+diff --git a/ms-usuarios/src/config/logger.js b/ms-usuarios/src/config/logger.js
+new file mode 100644
+index 0000000..2b03b63
+--- /dev/null
++++ b/ms-usuarios/src/config/logger.js
+@@ -0,0 +1,14 @@
++const pino = require('pino');
++
++const logger = pino({
++    level: process.env.LOG_LEVEL || 'info',
++    // "base" agrega estos campos a TODAS las líneas que emita este logger,
++    // sin que cada llamada a logger.info(...) tenga que repetirlos.
++    base: {
++        service: process.env.SERVICE_NAME || 'unknown_service',
++    },
++    // Timestamp en formato ISO legible (por defecto Pino usa epoch en ms).
++    timestamp: pino.stdTimeFunctions.isoTime,
++});
++
++module.exports = logger;
+\ No newline at end of file
+diff --git a/otel-collector-config.yaml b/otel-collector-config.yaml
+new file mode 100644
+index 0000000..d395b9b
+--- /dev/null
++++ b/otel-collector-config.yaml
+@@ -0,0 +1,27 @@
++receivers:
++  otlp:
++    protocols:
++      grpc:
++        endpoint: 0.0.0.0:4317
++      http:
++        endpoint: 0.0.0.0:4318
++
++processors:
++  batch:
++    timeout: 5s
++    send_batch_size: 1024
++
++exporters:
++  otlp:
++    endpoint: tempo:4317
++    tls:
++      insecure: true
++
++service:
++  pipelines:
++    traces:
++      receivers: [otlp]
++      processors: [batch]
++      exporters: [otlp]
++
++
+diff --git a/promtail-config.yaml b/promtail-config.yaml
+new file mode 100644
+index 0000000..baab5bf
+--- /dev/null
++++ b/promtail-config.yaml
+@@ -0,0 +1,50 @@
++# promtail-config.yml
++# Promtail descubre automáticamente los contenedores vía el socket de Docker
++# y lee sus logs directamente de /var/lib/docker/containers (por eso esos
++# dos volúmenes en docker-compose.yml).
++server:
++  http_listen_port: 9080
++  grpc_listen_port: 0
++
++positions:
++  # Recuerda hasta dónde leyó cada archivo de log, para no reenviar todo
++  # desde cero si Promtail se reinicia.
++  filename: /tmp/positions.yaml
++
++clients:
++  - url: http://loki:3100/loki/api/v1/push
++
++scrape_configs:
++  - job_name: docker_containers
++    docker_sd_configs:
++      - host: unix:///var/run/docker.sock
++        refresh_interval: 5s
++
++    # relabel_configs corre ANTES de leer el contenido del log: decide
++    # QUÉ LABELS de Loki se le ponen a cada stream según metadata de Docker.
++    relabel_configs:
++      # Usa el nombre del contenedor (ej. "ms-tutorias-1") como label "container".
++      - source_labels: ['__meta_docker_container_name']
++        regex: '/(.*)'
++        target_label: 'container'
++      # Usa el nombre del servicio de docker-compose (ej. "ms-tutorias") como label "service".
++      # Esto es lo que realmente vas a usar en las queries: {service="ms-tutorias"}
++      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
++        target_label: 'service'
++
++    # pipeline_stages corre DESPUÉS, sobre cada línea de log ya leída.
++    pipeline_stages:
++      # Docker envuelve cada línea en JSON: {"log":"...", "stream":"stdout", "time":"..."}
++      # Este stage la desenvuelve y deja solo el contenido real (nuestro JSON de Pino).
++      - docker: {}
++      # Como Pino ya loguea JSON, parseamos esos campos para poder promoverlos a labels.
++      - json:
++          expressions:
++            level: level
++      # "level" es de baja cardinalidad (solo unos pocos valores posibles: 30, 40, 50...)
++      # así que es seguro convertirlo en label indexado -> permite filtrar por severidad
++      # sin tener que escanear todo el texto. correlationId NO se vuelve label a propósito:
++      # tiene demasiados valores únicos y volvería la base de Loki ineficiente. Para buscar
++      # por correlationId se usa un filtro de texto normal: {service="ms-tutorias"} |= "el-id"
++      - labels:
++          level:
+\ No newline at end of file
+diff --git a/tempo.yaml b/tempo.yaml
+new file mode 100644
+index 0000000..f26428e
+--- /dev/null
++++ b/tempo.yaml
+@@ -0,0 +1,23 @@
++server:
++  http_listen_port: 3200
++
++distributor:
++  receivers:
++    # Tempo puede recibir spans directamente, pero acá los va a recibir
++    # SIEMPRE desde el otel-collector, no de los microservicios directo
++    otlp:
++      protocols:
++        http:
++        grpc:
++
++storage:
++  trace:
++    backend: local
++    local:
++      path: /tmp/tempo/traces
++    wal:
++      path: /tmp/tempo/wal
++
++compactor:
++  compaction:
++    block_retention: 48h # no necesitas guardar trazas más que un par de días para la demo
+\ No newline at end of file
+-- 
+2.51.2.windows.1
+
