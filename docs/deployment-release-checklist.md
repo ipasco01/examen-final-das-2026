@@ -36,7 +36,7 @@ Para rotarla hay que borrar el volumen (`docker compose down -v`) o crear el usu
 ## 1. Configuración
 
 - [ ] Existe `.env` en la raíz, copiado de `.env.example`, sin ningún valor `cambia-esta-password`.
-- [ ] Las 4 bases tienen su script en `docker/init/<base>/01-schema.sql`. Postgres los ejecuta
+- [ ] Las 5 bases tienen su script en `docker/init/<base>/01-schema.sql`. Postgres los ejecuta
       solo en la PRIMERA inicializacion del volumen: si la base ya existe, el script NO corre.
       Para aplicarlo sobre una base existente:
       `docker exec -i db_tutorias_postgres psql -U user_tutorias -d db_tutorias < docker/init/tutorias/01-schema.sql`
@@ -68,7 +68,7 @@ de publicarse.** Nunca `latest` en un manifiesto.
 ```powershell
 $env:IMAGE_TAG = git rev-parse --short HEAD
 docker compose up -d --build
-docker compose ps                                  # 19 servicios arriba
+docker compose ps                                  # 20 servicios arriba
 foreach ($p in 4000,3001,3002,3003,3000) { curl.exe -m 5 -f "http://localhost:$p/metrics" > $null; "$p -> $LASTEXITCODE" }
 ```
 
@@ -97,6 +97,19 @@ Corregido: servicio `db-notificaciones` (puerto 5436, healthcheck, volumen, init
 variables en `ms-notificaciones` con `depends_on: service_healthy`, StatefulSet + Service + PVC en
 `kubernetes-manifests/db-notificaciones.yaml`, y la clave en el Secret y en `.env.example`.
 Ademas se renombro `01-shema.sql` a `01-schema.sql`.
+
+**Hallazgo del 20/07: `ms-notificaciones` sin `JWT_SECRET` en compose.** Mismo servicio, misma
+revision, otra variable. El Equipo 2 agrego `jwt.middleware.js` y lo monto en
+`POST /notificaciones/:canal`; el middleware hace `jwt.verify(token, config.jwtSecret)`. La
+variable estaba definida en el Deployment de Kubernetes pero **no** en compose, porque los otros
+cuatro microservicios ya la tenian de antes y este quedo fuera al incorporarse el middleware
+despues. Con el secreto en `undefined`, `jwt.verify` lanza, el `catch` responde 401 y **todo token
+valido se rechaza**: el mismo token funcionaba en el cluster y fallaba en compose.
+
+Corregido con la misma guarda que el resto: `JWT_SECRET=${JWT_SECRET:?...}`. Vale la pena notar
+la direccion del error -- las nueve veces anteriores el manifiesto de K8s iba atras del compose;
+esta vez fue al reves. La leccion no es "revisar K8s", es que **cualquier entorno que no se
+ejecute se desincroniza**, sin importar cual.
 
 **Limite honesto de nuestro propio CI:** el job `arranque-real` NO habria detectado esto. El
 servicio arranca bien y responde `/metrics`; el fallo aparece recien en la primera notificacion que
@@ -200,7 +213,7 @@ kubectl get pvc
 Errores esperados que NO son fallas: `no matches for kind "KongPlugin"` y `"KongConsumer"`.
 Son CRDs de Kong, que no esta instalado en el cluster local. Los Secrets si se crean.
 
-- [ ] Los 5 StatefulSets (4 bases + RabbitMQ) llegan a `Ready` con su PVC en `Bound`.
+- [ ] Los 6 StatefulSets (5 bases + RabbitMQ) llegan a `Ready` con su PVC en `Bound`.
 - [ ] Los 5 Deployments llegan a `1/1 Running`, no `CrashLoopBackOff`.
 - [ ] Ningun pod arranca con el placeholder: si se salteo el paso 3, los microservicios corren
       con `CHANGE_ME_WITH_APP_JWT_SECRET` como secreto de firma y ningun token real valida.
@@ -249,21 +262,24 @@ python -c "import yaml;d=yaml.safe_load(open('docker-compose.yml'));print([n for
 
 Actualizado 19/07 tras la auditoria cruzada. Lo que estaba abierto el 18/07 y ya se cerro:
 imagenes propias por tag de commit, tempo/otel fijados por digest, esquema de BD versionado en
-`docker/init/`, healthchecks en 15 de 19 servicios, HPA + PDB, securityContext, USER no-root y
+`docker/init/`, healthchecks en 19 de 20 servicios, HPA + PDB, securityContext, USER no-root y
 HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 
 | # | Pendiente | Atributo en riesgo | Duenio |
 |---|---|---|---|
-| 1 | **Paridad compose ↔ K8s**: compose tiene 19 servicios, K8s cubre 10. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
+| 1 | **Paridad compose ↔ K8s**: compose tiene 20 servicios, K8s cubre 11. Faltan `prometheus`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `toxiproxy`, `client-sim`, `tracking-dashboard`. Portar Prometheus no es copiar el manifiesto: `static_configs` no funciona en K8s, hace falta `kubernetes_sd_configs` + ServiceAccount con RBAC | Observabilidad | Equipo 5 + Equipo 4 |
 | 2 | **`/health` propio en los microservicios**, separado de `/metrics`. Hoy las probes apuntan a `/metrics`, y desde que el Equipo 4 agrego Gauges con `collect()` que consultan la BD, un problema en Postgres hace que Kubernetes reinicie los pods de aplicacion: un fallo de la capa de datos se propaga a la de computo | Disponibilidad | Equipo 5 + Equipo 4 |
-| 3 | **Healthcheck en `toxiproxy`, `tempo`, `otel-collector`, `promtail`**. Usan imagenes distroless sin shell ni `wget`, asi que un `CMD-SHELL` los marcaria unhealthy sin estarlo. Para el collector hace falta habilitar la extension `health_check` en `otel-collector-config.yaml` (puerto 13133); para Tempo, exponer `/ready` con un binario capaz de consultarlo | Disponibilidad | Equipo 4 |
+| 3 | **Healthcheck en `otel-collector`** (unico pendiente: `toxiproxy`, `tempo` y `promtail` ya lo tienen, ver seccion 3). Hace falta habilitar la extension `health_check` en `otel-collector-config.yaml` (puerto 13133) y despues agregar el `CMD` aca | Disponibilidad | Equipo 4 |
 | 4 | **ConfigMap** para la configuracion no secreta, hoy duplicada inline en cada Deployment | Reproducibilidad | Equipo 5 |
 | 5 | **NetworkPolicy**: cualquier pod alcanza cualquier base | Seguridad | Equipo 5 + Equipo 3 |
 | 6 | **StorageClass explicita** en los `volumeClaimTemplates` (hoy dependen de la default del cluster) | Portabilidad | Equipo 5 |
 | 7 | **Topologia de RabbitMQ declarativa** (`definitions.json`). Hoy exchanges, colas y DLQ nacen de los `assertExchange`/`assertQueue` del codigo: la topologia depende de que servicio arranque primero y con que version | Confiabilidad | Equipo 2 |
-| 8 | **Instrumentacion OTel en los microservicios**. Tempo y el collector corren sanos pero ningun servicio exporta trazas: falta el SDK y `OTEL_EXPORTER_OTLP_ENDPOINT`. Verificable: `grep -h opentelemetry ms-*/package.json` no devuelve nada | Observabilidad | Equipo 4 |
+| 8 | ~~**Instrumentacion OTel en los microservicios**~~ **CERRADO 19/07** por el merge `f48911e` del Equipo 4: los 5 servicios traen el SDK y arrancan con `node -r ./src/config/tracing.js`. Verificado: `grep -h opentelemetry ms-*/package.json` devuelve 6 paquetes | Observabilidad | Equipo 4 |
 | 9 | **Provisioning de Grafana y Alertmanager**. Las reglas de `alert_rules.yml` se evaluan pero no hay destinatario configurado: una alerta que nadie recibe da sensacion de cobertura sin darla | Observabilidad | Equipo 4 |
 | 10 | **Separar los workers del proceso HTTP en ms-tutorias**. Cada replica agrega otra copia de los tres pollers compitiendo por las mismas filas; por eso su HPA tiene `maxReplicas: 2` mientras el resto tiene 4 | Escalabilidad | Equipo 1 + Equipo 5 |
+| 11 | **Test de integracion que ejercite el flujo, no solo el arranque.** Limite comprobado de nuestro propio CI: el job `arranque-real` no habria detectado la BD faltante de `ms-notificaciones` ni el `JWT_SECRET` faltante, porque en los dos casos el proceso levanta y responde `/metrics`; el fallo aparece recien en la primera peticion real | Verificabilidad | Equipo 5 |
+| 12 | **Variables OTel ausentes en los 5 Deployments de K8s.** Ningun manifiesto define `OTEL_SERVICE_NAME` ni `OTEL_EXPORTER_OTLP_ENDPOINT`. `tracing.js` cae a su default `http://otel-collector:4317`, que en el cluster no resuelve (el collector solo existe en compose): el exportador reintenta en silencio y no hay trazas. No rompe el servicio, y por eso pasa desapercibido. Es la cara concreta de la deuda #1 | Observabilidad | Equipo 5 + Equipo 4 |
+| 13 | **`enviarEmail` en `ms-tutorias/src/infrastructure/clients/notificaciones.client.js` es codigo muerto y ademas incorrecto.** No lo invoca nadie (la Saga notifica por RabbitMQ), pero hace `axios.post(url, payload)` **sin cabecera `Authorization`**. Si alguien lo conectara, el `jwt.middleware` que el Equipo 2 monto en `POST /:canal` lo cortaria con 401 en el primer `if (!authHeader)`. O se borra el cliente, o se le propaga el token | Mantenibilidad | Equipo 1 + Equipo 2 |
 
 ---
 

@@ -181,6 +181,14 @@ services:
       - DB_USER=user_notificaciones
       - DB_PASSWORD=${NOTIFICACIONES_DB_PASSWORD:?Definí NOTIFICACIONES_DB_PASSWORD en tu .env raíz}
       - DB_NAME=db_notificaciones
+      # --- Equipo 5 (20/07): JWT_SECRET. Faltaba SOLO en compose; en K8s ya estaba. ---
+      # El merge del Equipo 2 agrego jwt.middleware.js y lo monto en POST /notificaciones/:canal.
+      # El middleware hace jwt.verify(token, config.jwtSecret); con la variable ausente el
+      # secreto llega undefined, jwt.verify lanza, el catch responde 401 y TODO token valido
+      # se rechaza. Los otros 4 microservicios ya la tenian: este quedo fuera al agregarse
+      # el middleware despues. Asimetria compose/K8s: el mismo token funcionaba en el cluster
+      # y fallaba en compose.
+      - JWT_SECRET=${JWT_SECRET:?Definí JWT_SECRET en tu .env raíz}
       # --- OpenTelemetry (trazas distribuidas) ---
       - OTEL_SERVICE_NAME=ms-notificaciones
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
