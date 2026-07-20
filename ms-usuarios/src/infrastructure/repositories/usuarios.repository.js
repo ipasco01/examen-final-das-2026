@@ -62,7 +62,28 @@ const findTutorById = async (id) => {
     }
 };
 
+// Listado de tutores. Aditivo: no cambia ninguna consulta existente.
+//
+// Se seleccionan columnas explicitas en vez de SELECT *, a diferencia de las dos consultas de
+// arriba: esto alimenta un desplegable publico, y un SELECT * expondria cualquier columna que se
+// agregue a `tutores` en el futuro (telefono, documento, lo que sea) sin que nadie lo decida.
+// Buscar por ID devuelve un registro que el llamador ya sabe que pidio; listar es distinto.
+//
+// Ordenado por especialidad porque asi se muestra en el selector, y un orden estable evita que
+// las opciones cambien de lugar entre recargas.
+const findAllTutores = async () => {
+    const queryText = 'SELECT id, nombreCompleto, especialidad FROM tutores ORDER BY especialidad';
+    try {
+        const res = await db.query(queryText);
+        return res.rows;
+    } catch (err) {
+        console.error('Error ejecutando query findAllTutores:', err.stack);
+        throw buildUndefinedTableError(err);
+    }
+};
+
 module.exports = {
     findEstudianteById,
-    findTutorById
+    findTutorById,
+    findAllTutores
 };
