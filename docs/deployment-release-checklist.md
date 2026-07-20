@@ -152,7 +152,38 @@ estado exacto en que llego del Equipo 4**.
 **Limite honesto de nuestro propio CI:** el job `arranque-real` NO habria detectado esto. El
 servicio arranca bien y responde `/metrics`; el fallo aparece recien en la primera notificacion que
 intenta deduplicar. Para atraparlo hace falta un test de integracion que ejercite el flujo, no solo
-un chequeo de arranque. Queda como deuda #11.
+un chequeo de arranque. **Cerrado el 20/07** con `scripts/integracion-flujo-completo.sh`.
+
+**El test de integracion (deuda #11, cerrada).** Seis pasos: login, catalogo de tutores, solicitar,
+y despues dos EFECTOS que solo existen si la cadena completa funciono -- mas el rechazo de una
+materia incoherente, para que nadie borre esa validacion sin que salte.
+
+```bash
+bash scripts/integracion-flujo-completo.sh     # tambien corre en el job arranque-real
+```
+
+| Paso | Que verifica | Que hallazgo habria atrapado |
+|---|---|---|
+| 4 | fila en `logs_notificacion`, esperando con reintentos | **#10** -- la BD que no existia |
+| 5 | el endpoint protegido acepta el token | **#11** -- el `JWT_SECRET` faltante |
+| 6 | materia incoherente devuelve 400 | que alguien borre la validacion del paso 1b |
+
+Tres decisiones que valen mas que el script:
+
+1. **La materia se lee del sistema, no se hardcodea.** Sale de `GET /usuarios/tutores`. Si cambia
+   el seed, el test sigue andando -- el error opuesto al del formulario del simulador, que tenia la
+   fecha escrita a mano y caduco sola.
+2. **Sin `python3` ni `jq`: solo bash, curl, date, openssl y sed.** Corre igual en `ubuntu-latest`
+   y en Git Bash sobre Windows. Un chequeo que solo corre en el CI nadie lo ejecuta antes de
+   pushear, y entonces tiene el mismo problema que viene a resolver. La concesion es que parsear
+   JSON con `grep`/`sed` es fragil ante cambios de formato; queda dicho en el encabezado.
+3. **Horario aleatorio dentro del proximo año.** La v1 pedia siempre `hoy + 7 dias` y devolvia 409
+   en la segunda corrida, porque ms-agenda rechaza correctamente la reserva superpuesta. **Un test
+   que escribe datos reales no es repetible si el horario es fijo** -- y habria pasado
+   desapercibido, porque en CI el stack nace vacio en cada corrida: verde siempre, inservible en
+   local. Es la forma exacta de los hallazgos #10 y #11: sano en un entorno, roto en el otro.
+
+El punto 3 aparecio ejecutando el script, no escribiendolo. Sigue valiendo la regla.
 
 **Correccion del 19/07 — dos rondas, las dos las provoco la revision cruzada.**
 
@@ -345,7 +376,7 @@ HEALTHCHECK en los Dockerfiles, y el workflow de CI.
 | 8 | ~~**Instrumentacion OTel en los microservicios**~~ **CERRADO 19/07** por el merge `f48911e` del Equipo 4: los 5 servicios traen el SDK y arrancan con `node -r ./src/config/tracing.js`. Verificado: `grep -h opentelemetry ms-*/package.json` devuelve 6 paquetes | Observabilidad | Equipo 4 |
 | 9 | ~~**Provisioning de Grafana y Alertmanager**~~ **CERRADO 20/07** por el merge `b4d0a8a` del Equipo 4: Alertmanager + Mailpit como SMTP local, dashboard provisionado, y el bloque `alerting` en `prometheus.yml` que faltaba para que las reglas evaluadas le llegaran a alguien | Observabilidad | Equipo 4 |
 | 10 | **Separar los workers del proceso HTTP en ms-tutorias**. Cada replica agrega otra copia de los tres pollers compitiendo por las mismas filas; por eso su HPA tiene `maxReplicas: 2` mientras el resto tiene 4 | Escalabilidad | Equipo 1 + Equipo 5 |
-| 11 | **Test de integracion que ejercite el flujo, no solo el arranque.** Limite comprobado de nuestro propio CI: el job `arranque-real` no habria detectado la BD faltante de `ms-notificaciones` ni el `JWT_SECRET` faltante, porque en los dos casos el proceso levanta y responde `/metrics`; el fallo aparece recien en la primera peticion real | Verificabilidad | Equipo 5 |
+| 11 | ~~**Test de integracion que ejercite el flujo, no solo el arranque**~~ **CERRADO 20/07**: `scripts/integracion-flujo-completo.sh`, ejecutado por el job `arranque-real`. Verifica dos EFECTOS que solo existen si la cadena completa funciono -- la fila en `logs_notificacion` (habria atrapado el hallazgo #10) y que el endpoint protegido acepte el token (habria atrapado el #11) | Verificabilidad | Equipo 5 |
 | 12 | **Variables OTel ausentes en los 5 Deployments de K8s.** Ningun manifiesto define `OTEL_SERVICE_NAME` ni `OTEL_EXPORTER_OTLP_ENDPOINT`. `tracing.js` cae a su default `http://otel-collector:4317`, que en el cluster no resuelve (el collector solo existe en compose): el exportador reintenta en silencio y no hay trazas. No rompe el servicio, y por eso pasa desapercibido. Es la cara concreta de la deuda #1 | Observabilidad | Equipo 5 + Equipo 4 |
 | 13 | **`enviarEmail` en `ms-tutorias/src/infrastructure/clients/notificaciones.client.js` es codigo muerto y ademas incorrecto.** No lo invoca nadie (la Saga notifica por RabbitMQ), pero hace `axios.post(url, payload)` **sin cabecera `Authorization`**. Si alguien lo conectara, el `jwt.middleware` que el Equipo 2 monto en `POST /:canal` lo cortaria con 401 en el primer `if (!authHeader)`. O se borra el cliente, o se le propaga el token | Mantenibilidad | Equipo 1 + Equipo 2 |
 | 14 | **`materia` no se valida contra nada y no existe un catalogo de materias en el modelo.** Comprobado en ejecucion: se puede solicitar "Fisica Cuantica" al tutor `t09876`, cuya especialidad sembrada es "Calculo Multivariable", y la Saga responde `CONFIRMADA`. La causa de fondo es el modelo: `especialidad` es un `VARCHAR(255)` libre dentro de `tutores`, sin tabla de materias ni relacion tutor-materia, y un tutor solo puede tener una. Por eso tampoco se puede ofrecer un `<select>` en el cliente: no hay catalogo de donde poblarlo, y `ms-usuarios` solo expone `GET /tutores/:id` (busqueda por ID, no coleccion). **Recomendado:** validar `materia` contra la especialidad del tutor en `ejecutarSagaSolicitudTutoria`, despues de resolver al tutor y **antes** de crear la fila PENDIENTE -- es el ultimo punto sin efectos colaterales, asi el rechazo es un `throw` y no un rollback distribuido. Eso es una curita; la solucion real es un catalogo con relacion N:M | Modelo de dominio | Equipo 2 + Equipo 1 |

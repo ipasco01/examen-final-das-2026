@@ -207,6 +207,27 @@ jobs:
           done
           exit $fallos
 
+      - name: El flujo de negocio funciona, no solo el arranque
+        # DEUDA #11, CERRADA EL 20/07.
+        #
+        # Todo lo de arriba pregunta "¿el proceso responde?". Esto pregunta "¿el sistema hace lo
+        # que dice hacer?". La diferencia no es teorica: los hallazgos #10 y #11 pasaron los
+        # chequeos de arranque con verde y estaban rotos.
+        #
+        #   #10 — ms-notificaciones necesitaba una base que no existia. Arranca sano; falla en la
+        #         primera notificacion que intenta deduplicar.
+        #   #11 — ms-notificaciones sin JWT_SECRET. Arranca sano; rechaza todo token valido.
+        #
+        # El script ejercita login -> catalogo -> solicitar -> CONFIRMADA, y despues verifica dos
+        # EFECTOS que solo existen si la cadena completa funciono: la fila en logs_notificacion
+        # (atrapa #10) y que el endpoint protegido acepte el token (atrapa #11).
+        #
+        # "Un contenedor Up no es un servicio sano" fue la leccion de D1. Esto es el paso
+        # siguiente: un servicio sano no es todavia un sistema que funciona.
+        run: |
+          chmod +x scripts/integracion-flujo-completo.sh
+          ./scripts/integracion-flujo-completo.sh
+
       - name: Diagnostico si algo fallo
         if: failure()
         run: docker compose ps && docker compose logs --tail 50
