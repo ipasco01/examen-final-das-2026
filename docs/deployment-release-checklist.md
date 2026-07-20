@@ -479,6 +479,58 @@ El Gauge del Equipo 4 consulta la base cuando alguien pide `/metrics`; las probe
 el pod**. Un problema de la capa de datos derriba la de computo. La deuda #2 (`/health` propio,
 separado de `/metrics`) dejo de ser un riesgo teorico: esto es verla ocurrir.
 
+
+### Hallazgo #18: el plano de observabilidad no tenia persistencia (ninguno)
+
+Las bases del negocio tienen volumen desde el issue 3. **La observabilidad completa quedo afuera**,
+y nadie lo noto porque un Prometheus vacio se ve exactamente igual de sano que uno lleno.
+
+| Servicio | Volumen agregado | Que se perdia en cada reinicio |
+|---|---|---|
+| `prometheus` | `/prometheus` | el TSDB entero: toda la historia de metricas |
+| `grafana` | `/var/lib/grafana` | usuarios, contrasenas cambiadas, anotaciones, paneles hechos a mano |
+| `loki` | `/loki` | todos los logs (chunks e indice) |
+| `alertmanager` | `/alertmanager` | silencios activos y **el registro de que alertas ya notifico** |
+| `promtail` | `/tmp` | el archivo de posiciones de lectura |
+
+**El de Alertmanager es el mas traicionero.** Sin `/alertmanager` persistente, tras cada reinicio
+vuelve a notificar alertas que ya habia mandado y pierde los silencios -- justo lo que el
+`repeat_interval: 1h` de su configuracion busca evitar. La config del Equipo 4 esta bien pensada;
+le faltaba donde apoyarse.
+
+**El de Promtail tiene la forma mas clara de todo el proyecto.** Su config dice:
+
+```yaml
+positions:
+  # Recuerda hasta dónde leyó cada archivo de log, para no reenviar todo
+  # desde cero si Promtail se reinicia.
+  filename: /tmp/positions.yaml
+```
+
+El comentario **declara una intencion que el despliegue no cumplia**: `/tmp` dentro del contenedor
+es efimero. El mecanismo estaba bien escrito y nadie le dio donde persistir. Es la tesis de esta
+zona en una sola linea de YAML.
+
+**Dos servicios NO llevan volumen, a proposito, y esta escrito en el compose para que no se lea
+como olvido:**
+
+- `otel-collector`: sin estado por diseno. Los spans entran, pasan por el batch processor y salen a
+  Tempo. Si el pod muere se pierde a lo sumo un lote de 5s -- perdida aceptable para telemetria, a
+  diferencia de una base donde perder un lote es perder datos del negocio.
+- `mailpit`: SMTP falso para la demo. Perder los correos de prueba no es una perdida.
+
+**La ruta de Loki se verifico, no se dedujo.** Usa su configuracion interna (no hay archivo
+montado), asi que antes de montar nada:
+
+```bash
+docker exec loki cat /etc/loki/local-config.yaml | grep path_prefix
+# -> path_prefix: /loki
+```
+
+Habria apostado por `/tmp/loki`, que es el default de otras versiones de la imagen. Montar en la
+ruta equivocada habria dejado el compose con aspecto de arreglado y a Loki perdiendo los logs
+igual: **peor que no tocarlo**, porque cierra la pregunta sin resolver el problema.
+
 ### Estado final verificado
 
 13 pods `1/1 Running`: 5 microservicios, 5 bases, RabbitMQ, otel-collector y Tempo.

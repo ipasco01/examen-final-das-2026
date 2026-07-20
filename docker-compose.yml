@@ -531,6 +531,12 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - ./alert_rules.yml:/etc/prometheus/alert_rules.yml
+      # Equipo 5 (20/07): faltaba persistencia. /prometheus es el TSDB (la base de series
+      # temporales). Sin volumen, cada reinicio del contenedor borra TODA la historia de metricas
+      # y los paneles de Grafana arrancan de cero. Las bases del negocio tenian volumen desde el
+      # issue 3; la observabilidad quedo afuera y nadie lo noto porque un Prometheus vacio se ve
+      # igual de sano que uno lleno.
+      - prometheus_data:/prometheus
     ports:
       - "9091:9090"
     depends_on:
@@ -544,6 +550,12 @@ services:
     restart: unless-stopped
     volumes:
       - ./alertmanager.yaml:/etc/alertmanager/alertmanager.yml:ro
+      # Equipo 5 (20/07): el mas traicionero de los cuatro. /alertmanager guarda los silencios
+      # activos y el registro de que alertas YA fueron notificadas. Sin volumen, tras cada reinicio
+      # Alertmanager vuelve a notificar alertas que ya habia mandado y pierde los silencios que
+      # alguien puso -- exactamente lo que el `repeat_interval: 1h` de su config busca evitar.
+      # La configuracion del Equipo 4 esta bien pensada; le faltaba donde apoyarse.
+      - alertmanager_data:/alertmanager
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
     ports:
@@ -608,6 +620,12 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Definí GRAFANA_ADMIN_PASSWORD en tu .env raíz}
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
+      # Equipo 5 (20/07): /var/lib/grafana es la base SQLite de Grafana. Guarda usuarios, la
+      # contrasena de admin si se cambia, anotaciones, y los dashboards creados desde la UI.
+      # OJO con el matiz: los dashboards PROVISIONADOS por archivo (los que agrego el Equipo 4 en
+      # grafana/provisioning/dashboards/) se recrean solos en cada arranque, asi que esos no se
+      # pierden. Lo que se pierde es todo lo que alguien haga a mano durante una demo.
+      - grafana_data:/var/lib/grafana
     depends_on:
       prometheus:
         condition: service_started
@@ -629,6 +647,18 @@ services:
       start_period: 20s
     ports:
       - "3100:3100" # API de Loki (para pegar "queries" directo)
+    # Equipo 5 (20/07): faltaba persistencia -- era el unico servicio de observabilidad sin
+    # NINGUN volumen, ni de datos ni de config. Sin esto, cada `docker compose down` borra todos
+    # los logs recolectados.
+    #
+    # La ruta NO se dedujo: Loki usa su config interna (no hay archivo montado), asi que se
+    # consulto la fuente antes de montar nada:
+    #   docker exec loki cat /etc/loki/local-config.yaml | grep path_prefix
+    #   -> path_prefix: /loki   (chunks_directory: /loki/chunks, rules_directory: /loki/rules)
+    # Montar en la ruta equivocada habria dejado el compose con aspecto de arreglado y a Loki
+    # perdiendo los logs igual, que es peor que no tocarlo.
+    volumes:
+      - loki_data:/loki
     command: -config.file=/etc/loki/local-config.yaml
 
   promtail:
@@ -655,6 +685,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - ./promtail-config.yaml:/etc/promtail/config.yml:ro
+      # Equipo 5 (20/07). El comentario en promtail-config.yaml dice "para no reenviar todo desde
+      # cero si Promtail se reinicia" -- pero apunta a /tmp/positions.yaml, y /tmp dentro del
+      # contenedor es efimero. **La intencion estaba escrita y el despliegue no la cumplia.**
+      # Sin el archivo de posiciones, al reiniciar o relee todo (logs duplicados en Loki) o
+      # arranca desde el final (se pierde la ventana del reinicio), segun la config.
+      # Se monta /tmp entero para no tocar un archivo del Equipo 4. Lo prolijo seria que ellos
+      # muevan `filename` a /promtail/positions.yaml y montar solo ese directorio: queda anotado.
+      - promtail_data:/tmp
     command: -config.file=/etc/promtail/config.yml
     depends_on:
       loki:
@@ -668,4 +706,15 @@ volumes:
   postgres_data_agenda:
   postgres_data_tutorias:
   rabbitmq_data:
+  # --- Equipo 5 (20/07): persistencia de la observabilidad ---
+  # Faltaban todos. Las bases del negocio tenian volumen desde el issue 3, pero el plano de
+  # observabilidad quedo sin ninguno: metricas, logs, silencios de alertas y posiciones de lectura
+  # se perdian en cada `docker compose down`. No hay volumen para otel-collector (es sin estado por
+  # diseno: los spans entran, se procesan y salen) ni para mailpit (SMTP falso de demo: perder los
+  # correos de prueba no es una perdida).
+  prometheus_data:
+  loki_data:
+  grafana_data:
+  alertmanager_data:
+  promtail_data:
   tempo_data:
