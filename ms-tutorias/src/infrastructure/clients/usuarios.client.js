@@ -4,6 +4,7 @@ const CircuitBreaker = require('opossum'); // 1. Importar Opossum
 const { usuariosServiceUrl } = require('../../config');
 const { publishTrackingEvent } = require('../messaging/message.producer'); // Para reportar al dashboard
 const { conReintentos } = require('./retry.util');
+const { circuitBreakerState } = require('../observability/circuitBreaker.metrics');
 
 // Reintentos con backoff exponencial + jitter ante caídas puntuales de ms-usuarios (contenedor
 // reiniciando, blip de red) -- ver retry.util.js. Configurable por si en el demo se quiere mostrar
@@ -38,9 +39,21 @@ const _makeRequest = async (url, correlationId, authHeader) => {
 const breaker = new CircuitBreaker(_makeRequest, breakerOptions);
 
 // Reportar cambios de estado al Dashboard (Opcional pero genial para visibilidad)
-breaker.on('open', () => console.log('[CircuitBreaker] ABIERTO: ms-usuarios no responde.'));
-breaker.on('halfOpen', () => console.log('[CircuitBreaker] HALF-OPEN: Probando recuperación...'));
-breaker.on('close', () => console.log('[CircuitBreaker] CERRADO: ms-usuarios recuperado.'));
+// Arranca en 0 (cerrado) desde el primer instante -- ver mismo comentario en agenda.client.js.
+circuitBreakerState.set({ target_service: 'ms-usuarios' }, 0);
+
+breaker.on('open', () => {
+    console.log('[CircuitBreaker] ABIERTO: ms-usuarios no responde.');
+    circuitBreakerState.set({ target_service: 'ms-usuarios' }, 1);
+});
+breaker.on('halfOpen', () => {
+    console.log('[CircuitBreaker] HALF-OPEN: Probando recuperación...');
+    circuitBreakerState.set({ target_service: 'ms-usuarios' }, 0.5);
+});
+breaker.on('close', () => {
+    console.log('[CircuitBreaker] CERRADO: ms-usuarios recuperado.');
+    circuitBreakerState.set({ target_service: 'ms-usuarios' }, 0);
+});
 
 const reportOpenCircuit = async (correlationId) => {
     await publishTrackingEvent({
@@ -91,3 +104,4 @@ const getUsuario = async (tipo, id, correlationId, authHeader) => {
 };
 
 module.exports = { getUsuario };
+ 
