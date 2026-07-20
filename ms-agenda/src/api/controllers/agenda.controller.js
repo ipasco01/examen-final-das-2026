@@ -10,7 +10,7 @@ const getDisponibilidad = async (req, res, next) => {
         const { fechaHora } = req.query;
 
         if (!fechaHora) {
-            throw { statusCode: 400, message: 'El parámetro "fechaHora" es requerido.' };
+            throw Object.assign(new Error('El parámetro "fechaHora" es requerido.'), { statusCode: 400 });
         }
 
         const resultado = await agendaService.verificarDisponibilidad(id_tutor, fechaHora);

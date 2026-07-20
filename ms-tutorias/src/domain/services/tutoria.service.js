@@ -4,6 +4,7 @@ const usuariosClient = require('../../infrastructure/clients/usuarios.client');
 const agendaClient = require('../../infrastructure/clients/agenda.client');
 const { publishTrackingEvent } = require('../../infrastructure/messaging/message.producer');
 const { compensacionFallidaTotal } = require('../../infrastructure/observability/compensacion.metrics');
+const { delayConJitter } = require('../../infrastructure/clients/retry.util');
 
 // Función helper para publicar tracking
 const track = (cid, message, status = 'INFO', idempotencyKey) => {
@@ -27,9 +28,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const COMPENSACION_MAX_INTENTOS = Number(process.env.COMPENSACION_AGENDA_MAX_INTENTOS || 3);
 const COMPENSACION_BASE_DELAY_MS = Number(process.env.COMPENSACION_AGENDA_BASE_DELAY_MS || 200);
+const SAGA_TIMEOUT_MS = Number(process.env.SAGA_TIMEOUT_MS || 15000);
 
-const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => {
+const ejecutarSagaSolicitudTutoria = async (datosSolicitud, correlationId, options = {}) => {
     const { idEstudiante, idTutor, fechaSolicitada, duracionMinutos, materia, idempotencyKey } = datosSolicitud;
+    const { authHeader } = options;
 
     // Envuelve track() para no repetir correlationId/idempotencyKey en cada llamada de este flujo;
     // el dashboard necesita la idempotencyKey en cada evento para poder filtrar la traza de una solicitud.
@@ -43,6 +46,14 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
         }
     }
 
+    // S5: la forma de fechaSolicitada ya se validó en el controller; "debe ser futura" es una
+    // regla de negocio que solo aplica a una Saga genuinamente nueva -- va después del
+    // short-circuit de arriba para no rechazar un reintento idempotente legítimo cuya fecha
+    // originalmente solicitada haya quedado en el pasado mientras tanto.
+    if (new Date(fechaSolicitada).getTime() <= Date.now()) {
+        throw Object.assign(new Error('El campo "fechaSolicitada" debe ser una fecha futura.'), { statusCode: 400 });
+    }
+
     let nuevaTutoria;
     let bloqueoRealizado = null;
 
@@ -50,8 +61,8 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
         // --- 1. Validar usuarios ---
         trackCid('Validando usuarios...');
         const [estudiante, tutor] = await Promise.all([
-            usuariosClient.getUsuario('estudiantes', idEstudiante, correlationId),
-            usuariosClient.getUsuario('tutores', idTutor, correlationId)
+            usuariosClient.getUsuario('estudiantes', idEstudiante, correlationId, authHeader),
+            usuariosClient.getUsuario('tutores', idTutor, correlationId, authHeader)
         ]);
         if (!estudiante) throw Object.assign(new Error('Estudiante no encontrado'), { statusCode: 404 });
         if (!tutor) throw Object.assign(new Error('Tutor no encontrado'), { statusCode: 404 });
@@ -59,13 +70,16 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
 
         // --- 2. Verificar agenda ---
         trackCid('Verificando disponibilidad de agenda...');
-        const disponible = await agendaClient.verificarDisponibilidad(idTutor, fechaSolicitada, correlationId);
+        const disponible = await agendaClient.verificarDisponibilidad(idTutor, fechaSolicitada, correlationId, authHeader);
         if (!disponible) throw Object.assign(new Error('Horario no disponible'), { statusCode: 409 });
         trackCid('Agenda verificada (disponible).');
 
         // --- 3. Crear PENDIENTE ---
         trackCid('Creando tutoría en estado PENDIENTE...');
-        const tutoriaPendienteData = { idEstudiante, idTutor, fecha: new Date(fechaSolicitada), materia, estado: 'PENDIENTE', idempotencyKey };
+        // nombreTutor: denormalizado acá porque ya se resolvió contra ms-usuarios en el paso 1 --
+        // evita que cada lectura (GET /v1/tutorias) tenga que volver a consultar ms-usuarios.
+        const nombreTutor = tutor.nombrecompleto || tutor.nombreCompleto || null;
+        const tutoriaPendienteData = { idEstudiante, idTutor, nombreTutor, fecha: new Date(fechaSolicitada), materia, estado: 'PENDIENTE', idempotencyKey };
         nuevaTutoria = await tutoriaRepository.save(tutoriaPendienteData);
 
         // Carrera de idempotencia: otra solicitud concurrente con la misma key ya insertó/avanzó su propia fila
@@ -80,7 +94,7 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
         // --- 4. Comandos de la Saga ---
         trackCid('Bloqueando horario en agenda...');
         const payloadAgenda = { fechaInicio: fechaSolicitada, duracionMinutos, idEstudiante };
-        bloqueoRealizado = await agendaClient.bloquearAgenda(idTutor, payloadAgenda, correlationId);
+        bloqueoRealizado = await agendaClient.bloquearAgenda(idTutor, payloadAgenda, correlationId, authHeader);
         const idBloqueo = bloqueoRealizado.idBloqueo || bloqueoRealizado.idbloqueo;
         trackCid(`Bloqueo de agenda exitoso. ID: ${idBloqueo}`);
 
@@ -106,7 +120,9 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
         // en ese instante exacto, ya no se pierde la notificación en silencio. El poller
         // (outbox.publisher.js) es quien efectivamente llama a publishToQueue.
         trackCid('Confirmando tutoría y encolando notificación (outbox)...');
-        const tutoriaConfirmadaPayload = { idTutoria: nuevaTutoria.idtutoria, estado: 'CONFIRMADA', error: null };
+        // idBloqueo: se persiste recién acá (no hay dónde guardarlo antes) para que
+        // cancelarTutoria pueda liberar el horario correcto en ms-agenda más adelante.
+        const tutoriaConfirmadaPayload = { idTutoria: nuevaTutoria.idtutoria, estado: 'CONFIRMADA', error: null, idBloqueo };
         const tutoriaConfirmada = await tutoriaRepository.save(tutoriaConfirmadaPayload, { outboxNotificacion: payloadNotificacion });
         trackCid('Actualización a CONFIRMADA exitosa; notificación en outbox pendiente de publicación.');
         return tutoriaConfirmada;
@@ -148,14 +164,14 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
 
             for (let intento = 1; intento <= COMPENSACION_MAX_INTENTOS && !compensacionExitosa; intento++) {
                 try {
-                    await agendaClient.cancelarBloqueo(idBloqueo, correlationId);
+                    await agendaClient.cancelarBloqueo(idBloqueo, correlationId, authHeader);
                     compensacionExitosa = true;
                     trackCid(`Compensación (Agenda) exitosa en intento ${intento}.`, 'ERROR');
                 } catch (compError) {
                     ultimoErrorCompensacion = compError;
                     trackCid(`Intento ${intento}/${COMPENSACION_MAX_INTENTOS} de compensación de agenda falló: ${compError.message}`, 'ERROR');
                     if (intento < COMPENSACION_MAX_INTENTOS) {
-                        await sleep(COMPENSACION_BASE_DELAY_MS * intento);
+                        await sleep(delayConJitter(intento, COMPENSACION_BASE_DELAY_MS));
                     }
                 }
             }
@@ -193,4 +209,254 @@ const solicitarTutoria = async (datosSolicitud, correlationId, options = {}) => 
     }
 };
 
-module.exports = { solicitarTutoria };
+// S1: red de seguridad adicional -- statement_timeout en db.js ya acota cada query individual, pero
+// esto acota el tiempo total que un cliente HTTP espera por una operación completa. Importante: es
+// un timeout del lado del cliente, no una cancelación real -- si `ejecutar` sigue corriendo cuando
+// esto dispara, sigue corriendo en segundo plano (Node no puede abortar una promesa en curso); esto
+// solo evita que el request quede colgado indefinidamente. Compartido entre solicitarTutoria y
+// cancelarTutoria -- ambas son operaciones de la Saga con el mismo perfil de riesgo (varias
+// llamadas HTTP + Postgres encadenadas).
+const conTimeoutDeSaga = async (ejecutar) => {
+    let timeoutHandle;
+    const timeout = new Promise((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+            reject(Object.assign(
+                new Error('La operación superó el tiempo máximo de procesamiento.'),
+                { statusCode: 504 }
+            ));
+        }, SAGA_TIMEOUT_MS);
+    });
+
+    try {
+        return await Promise.race([ejecutar(), timeout]);
+    } finally {
+        clearTimeout(timeoutHandle);
+    }
+};
+
+const solicitarTutoria = (datosSolicitud, correlationId, options = {}) =>
+    conTimeoutDeSaga(() => ejecutarSagaSolicitudTutoria(datosSolicitud, correlationId, options));
+
+// S8: consulta simple, sin la máquina de la Saga -- se mantiene en el servicio (en vez de que el
+// controller llame al repository directo) para seguir la misma capa controller -> service ->
+// repository que usa el resto del servicio (ver CLAUDE.md, "Per-service internal layout").
+const obtenerTutoriaPorId = async (idTutoria) => tutoriaRepository.findById(idTutoria);
+
+// Listado de "mis tutorías" para GET /v1/tutorias -- mismo criterio de capas que obtenerTutoriaPorId.
+const listarTutoriasPorEstudiante = async (idEstudiante) => tutoriaRepository.findByEstudiante(idEstudiante);
+
+// Cancelación de una tutoría CONFIRMADA. Reusa el mismo mecanismo de reintento + compensación
+// pendiente que el catch-all de la Saga (COMPENSACION_MAX_INTENTOS/COMPENSACION_BASE_DELAY_MS,
+// tabla compensaciones_pendientes, compensacion.worker.js) en vez de inventar uno nuevo -- es
+// literalmente el mismo problema (liberar un bloqueo de agenda de forma resiliente), solo que
+// disparado por el estudiante en vez de por una falla de la Saga.
+//
+// Diseño deliberado: la tutoría pasa a CANCELADA de forma incondicional, igual que el catch-all
+// marca FALLIDA sin importar si la compensación síncrona tuvo éxito -- desde la perspectiva del
+// estudiante, "cancelar" siempre debe funcionar; liberar el horario en ms-agenda es una
+// preocupación operativa de fondo (reintentada por el worker si el intento inmediato falla), no
+// algo que deba bloquear ni revertir la cancelación.
+const ejecutarCancelacionTutoria = async (idTutoria, idEstudianteSolicitante, correlationId, authHeader) => {
+    const trackCid = (message, status = 'INFO') => track(correlationId, message, status);
+
+    const tutoria = await tutoriaRepository.findById(idTutoria);
+    // Mismo criterio que getTutoriaPorId: "no existe" y "no es tuya" responden igual, para no
+    // confirmarle a un estudiante autenticado que un idTutoria ajeno existe.
+    if (!tutoria || tutoria.idestudiante !== idEstudianteSolicitante) {
+        throw Object.assign(new Error('Tutoría no encontrada.'), { statusCode: 404 });
+    }
+    if (tutoria.estado !== 'CONFIRMADA') {
+        throw Object.assign(
+            new Error(`Solo se puede cancelar una tutoría CONFIRMADA (estado actual: ${tutoria.estado}).`),
+            { statusCode: 409 }
+        );
+    }
+
+    trackCid(`Cancelando tutoría ${idTutoria}...`);
+
+    const idBloqueo = tutoria.idbloqueo;
+    let compensacionPendientePayload = null;
+
+    if (idBloqueo) {
+        trackCid('Liberando horario en ms-agenda...');
+        let liberado = false;
+        let ultimoError;
+
+        for (let intento = 1; intento <= COMPENSACION_MAX_INTENTOS && !liberado; intento++) {
+            try {
+                await agendaClient.cancelarBloqueo(idBloqueo, correlationId, authHeader);
+                liberado = true;
+                trackCid(`Horario liberado en intento ${intento}.`);
+            } catch (err) {
+                ultimoError = err;
+                trackCid(`Intento ${intento}/${COMPENSACION_MAX_INTENTOS} de liberar el horario falló: ${err.message}`, 'ERROR');
+                if (intento < COMPENSACION_MAX_INTENTOS) {
+                    await sleep(delayConJitter(intento, COMPENSACION_BASE_DELAY_MS));
+                }
+            }
+        }
+
+        if (!liberado) {
+            trackCid(`No se pudo liberar el horario tras ${COMPENSACION_MAX_INTENTOS} intentos: ${ultimoError.message}`, 'ERROR');
+            compensacionFallidaTotal.inc({ etapa: 'cancelacion' });
+            compensacionPendientePayload = {
+                idBloqueo,
+                idTutor: tutoria.idtutor,
+                correlationId,
+                motivo: `Cancelación de tutoría ${idTutoria}: ${ultimoError.message}`
+            };
+            trackCid('Liberación pendiente registrada para reintento en segundo plano.', 'ERROR');
+        }
+    }
+
+    const saveOptions = compensacionPendientePayload ? { compensacionPendiente: compensacionPendientePayload } : {};
+    const tutoriaCancelada = await tutoriaRepository.save({ idTutoria, estado: 'CANCELADA', error: null }, saveOptions);
+    trackCid('Tutoría cancelada.');
+    return tutoriaCancelada;
+};
+
+const cancelarTutoria = (idTutoria, idEstudianteSolicitante, correlationId, authHeader) =>
+    conTimeoutDeSaga(() => ejecutarCancelacionTutoria(idTutoria, idEstudianteSolicitante, correlationId, authHeader));
+
+// Reprogramación de una tutoría CONFIRMADA (completa el alcance Rep&Cancel del equipo 6).
+//
+// Orden deliberado RESERVAR-PRIMERO, LIBERAR-DESPUÉS: el peor caso de este orden es un doble
+// bloqueo temporal (el viejo queda tomado hasta que el worker de compensaciones lo libere),
+// mientras que el orden inverso podría dejar al estudiante SIN ningún horario (liberó el viejo y
+// otro le ganó el nuevo antes de re-bloquear). Degradación segura > pérdida de la reserva.
+//
+// Manejo de fallas por tramo:
+//  - Falla bloqueando el NUEVO  -> nada que limpiar; la tutoría conserva su horario original (409/5xx).
+//  - Falla el UPDATE tras bloquear -> se compensa el bloqueo NUEVO (reintentos y, si también falla,
+//    compensaciones_pendientes); la tutoría conserva su horario original y se propaga el error.
+//  - Falla liberar el VIEJO tras el UPDATE -> la reprogramación YA es efectiva (200); la liberación
+//    queda en compensaciones_pendientes y la resuelve el worker en segundo plano (mismo criterio
+//    que la cancelación: la limpieza de agenda es preocupación operativa, no del estudiante).
+const ejecutarReprogramacionTutoria = async (idTutoria, idEstudianteSolicitante, datos, correlationId, authHeader) => {
+    const { nuevaFecha, duracionMinutos } = datos;
+    const trackCid = (message, status = 'INFO') => track(correlationId, message, status);
+
+    const tutoria = await tutoriaRepository.findById(idTutoria);
+    // Mismo criterio de ownership que cancelar: "no existe" y "no es tuya" responden 404 uniforme.
+    if (!tutoria || tutoria.idestudiante !== idEstudianteSolicitante) {
+        throw Object.assign(new Error('Tutoría no encontrada.'), { statusCode: 404 });
+    }
+    if (tutoria.estado !== 'CONFIRMADA') {
+        throw Object.assign(
+            new Error(`Solo se puede reprogramar una tutoría CONFIRMADA (estado actual: ${tutoria.estado}).`),
+            { statusCode: 409 }
+        );
+    }
+    if (new Date(nuevaFecha).getTime() <= Date.now()) {
+        throw Object.assign(new Error('La nueva fecha debe ser una fecha futura.'), { statusCode: 400 });
+    }
+    if (new Date(nuevaFecha).getTime() === new Date(tutoria.fecha).getTime()) {
+        throw Object.assign(new Error('La nueva fecha es igual a la fecha actual de la tutoría.'), { statusCode: 400 });
+    }
+
+    const idBloqueoViejo = tutoria.idbloqueo;
+    trackCid(`Reprogramando tutoría ${idTutoria} hacia ${nuevaFecha}...`);
+
+    // --- 0. Resolver email del estudiante para la notificación (y de paso validar que sigue existiendo) ---
+    const estudiante = await usuariosClient.getUsuario('estudiantes', idEstudianteSolicitante, correlationId, authHeader);
+    if (!estudiante) throw Object.assign(new Error('Estudiante no encontrado'), { statusCode: 404 });
+
+    // --- 1. Verificar disponibilidad del nuevo horario ---
+    trackCid('Verificando disponibilidad del nuevo horario...');
+    const disponible = await agendaClient.verificarDisponibilidad(tutoria.idtutor, nuevaFecha, correlationId, authHeader);
+    if (!disponible) {
+        throw Object.assign(new Error('El nuevo horario no está disponible'), { statusCode: 409 });
+    }
+
+    // --- 2. RESERVAR-PRIMERO: bloquear el nuevo horario ---
+    trackCid('Bloqueando el nuevo horario en agenda...');
+    const payloadAgenda = { fechaInicio: nuevaFecha, duracionMinutos, idEstudiante: tutoria.idestudiante };
+    const bloqueoNuevo = await agendaClient.bloquearAgenda(tutoria.idtutor, payloadAgenda, correlationId, authHeader);
+    const idBloqueoNuevo = bloqueoNuevo.idBloqueo || bloqueoNuevo.idbloqueo;
+    trackCid(`Nuevo horario bloqueado. ID: ${idBloqueoNuevo}`);
+
+    // --- 3. UPDATE (fecha + idBloqueo nuevo) + notificación en la misma transacción (outbox) ---
+    const payloadNotificacion = {
+        destinatario: estudiante.email,
+        asunto: `Tutoría de ${tutoria.materia} reprogramada`,
+        cuerpo: `Hola ${estudiante.nombrecompleto || estudiante.nombreCompleto}, tu tutoría con ${tutoria.nombretutor || tutoria.idtutor} se movió a ${nuevaFecha}.`,
+        correlationId
+    };
+
+    let tutoriaReprogramada;
+    try {
+        trackCid('Actualizando la tutoría y encolando notificación (outbox)...');
+        // Nota: NO se envía `estado` -- la tutoría sigue CONFIRMADA y la máquina de estados del
+        // repositorio (correctamente) rechaza transiciones al mismo estado. Solo cambian fecha e idBloqueo.
+        tutoriaReprogramada = await tutoriaRepository.save(
+            { idTutoria, fecha: new Date(nuevaFecha), error: null, idBloqueo: idBloqueoNuevo },
+            { outboxNotificacion: payloadNotificacion }
+        );
+    } catch (err) {
+        // El UPDATE falló DESPUÉS de bloquear el nuevo horario: compensar ese bloqueo para no
+        // dejarlo huérfano. La tutoría sigue CONFIRMADA con su horario original.
+        trackCid(`Falló el UPDATE de la reprogramación: ${err.message}. Compensando el bloqueo nuevo...`, 'ERROR');
+        let liberadoNuevo = false;
+        for (let intento = 1; intento <= COMPENSACION_MAX_INTENTOS && !liberadoNuevo; intento++) {
+            try {
+                await agendaClient.cancelarBloqueo(idBloqueoNuevo, correlationId, authHeader);
+                liberadoNuevo = true;
+                trackCid(`Bloqueo nuevo compensado en intento ${intento}.`, 'ERROR');
+            } catch (compErr) {
+                trackCid(`Intento ${intento}/${COMPENSACION_MAX_INTENTOS} de compensar el bloqueo nuevo falló: ${compErr.message}`, 'ERROR');
+                if (intento < COMPENSACION_MAX_INTENTOS) await sleep(COMPENSACION_BASE_DELAY_MS * intento);
+            }
+        }
+        if (!liberadoNuevo) {
+            compensacionFallidaTotal.inc({ etapa: 'reprogramacion' });
+            // Best effort: registrar la liberación pendiente. Si la BD sigue caída (causa probable
+            // del fallo original), esto también fallará; queda el evento de tracking como rastro.
+            try {
+                await tutoriaRepository.save(
+                    { idTutoria, error: null },
+                    { compensacionPendiente: { idBloqueo: idBloqueoNuevo, idTutor: tutoria.idtutor, correlationId, motivo: `Reprogramación fallida de ${idTutoria}: bloqueo nuevo sin liberar` } }
+                );
+                trackCid('Liberación del bloqueo nuevo registrada para reintento en segundo plano.', 'ERROR');
+            } catch (regErr) {
+                trackCid(`CRÍTICO: no se pudo registrar la compensación del bloqueo nuevo (${idBloqueoNuevo}): ${regErr.message}. Verificar manualmente en ms-agenda.`, 'ERROR');
+            }
+        }
+        throw Object.assign(new Error(`No se pudo reprogramar la tutoría: ${err.message}`), { statusCode: 500 });
+    }
+
+    // --- 4. LIBERAR-DESPUÉS: soltar el horario viejo (la reprogramación ya es efectiva) ---
+    if (idBloqueoViejo) {
+        trackCid('Liberando el horario anterior en ms-agenda...');
+        let liberadoViejo = false;
+        let ultimoError;
+        for (let intento = 1; intento <= COMPENSACION_MAX_INTENTOS && !liberadoViejo; intento++) {
+            try {
+                await agendaClient.cancelarBloqueo(idBloqueoViejo, correlationId, authHeader);
+                liberadoViejo = true;
+                trackCid(`Horario anterior liberado en intento ${intento}.`);
+            } catch (err) {
+                ultimoError = err;
+                trackCid(`Intento ${intento}/${COMPENSACION_MAX_INTENTOS} de liberar el horario anterior falló: ${err.message}`, 'ERROR');
+                if (intento < COMPENSACION_MAX_INTENTOS) await sleep(COMPENSACION_BASE_DELAY_MS * intento);
+            }
+        }
+        if (!liberadoViejo) {
+            compensacionFallidaTotal.inc({ etapa: 'reprogramacion' });
+            await tutoriaRepository.save(
+                { idTutoria, error: null },
+                { compensacionPendiente: { idBloqueo: idBloqueoViejo, idTutor: tutoria.idtutor, correlationId, motivo: `Reprogramación de ${idTutoria}: ${ultimoError.message}` } }
+            );
+            trackCid('Liberación del horario anterior registrada para reintento en segundo plano.', 'ERROR');
+        }
+    } else {
+        trackCid('La tutoría no tenía idBloqueo persistido; no hay horario anterior que liberar.', 'ERROR');
+    }
+
+    trackCid('Tutoría reprogramada.');
+    return tutoriaReprogramada;
+};
+
+const reprogramarTutoria = (idTutoria, idEstudianteSolicitante, datos, correlationId, authHeader) =>
+    conTimeoutDeSaga(() => ejecutarReprogramacionTutoria(idTutoria, idEstudianteSolicitante, datos, correlationId, authHeader));
+
+module.exports = { solicitarTutoria, obtenerTutoriaPorId, listarTutoriasPorEstudiante, cancelarTutoria, reprogramarTutoria };

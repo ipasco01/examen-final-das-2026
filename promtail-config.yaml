@@ -1,0 +1,50 @@
+# promtail-config.yml
+# Promtail descubre automáticamente los contenedores vía el socket de Docker
+# y lee sus logs directamente de /var/lib/docker/containers (por eso esos
+# dos volúmenes en docker-compose.yml).
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  # Recuerda hasta dónde leyó cada archivo de log, para no reenviar todo
+  # desde cero si Promtail se reinicia.
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker_containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+
+    # relabel_configs corre ANTES de leer el contenido del log: decide
+    # QUÉ LABELS de Loki se le ponen a cada stream según metadata de Docker.
+    relabel_configs:
+      # Usa el nombre del contenedor (ej. "ms-tutorias-1") como label "container".
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      # Usa el nombre del servicio de docker-compose (ej. "ms-tutorias") como label "service".
+      # Esto es lo que realmente vas a usar en las queries: {service="ms-tutorias"}
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+
+    # pipeline_stages corre DESPUÉS, sobre cada línea de log ya leída.
+    pipeline_stages:
+      # Docker envuelve cada línea en JSON: {"log":"...", "stream":"stdout", "time":"..."}
+      # Este stage la desenvuelve y deja solo el contenido real (nuestro JSON de Pino).
+      - docker: {}
+      # Como Pino ya loguea JSON, parseamos esos campos para poder promoverlos a labels.
+      - json:
+          expressions:
+            level: level
+      # "level" es de baja cardinalidad (solo unos pocos valores posibles: 30, 40, 50...)
+      # así que es seguro convertirlo en label indexado -> permite filtrar por severidad
+      # sin tener que escanear todo el texto. correlationId NO se vuelve label a propósito:
+      # tiene demasiados valores únicos y volvería la base de Loki ineficiente. Para buscar
+      # por correlationId se usa un filtro de texto normal: {service="ms-tutorias"} |= "el-id"
+      - labels:
+          level:

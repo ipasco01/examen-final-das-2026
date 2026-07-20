@@ -22,9 +22,9 @@ require.cache[dbPath] = {
     filename: dbPath,
     loaded: true,
     exports: {
-        // withTransaction real (no stubbeamos su lógica) pero con un client falso: ejercita el
-        // orden real de runOnce sin necesitar Postgres.
-        withTransaction: async (callback) => callback(fakeClient)
+        // withWorkerTransaction real (no stubbeamos su lógica) pero con un client falso: ejercita
+        // el orden real de runOnce sin necesitar Postgres. El worker usa el pool reservado (S6).
+        withWorkerTransaction: async (callback) => callback(fakeClient)
     }
 };
 
@@ -117,4 +117,33 @@ test('runOnce no hace nada si ya hay un ciclo en curso (guard de reentrancia)', 
     resolverCancelacion();
     const resultadoPrimero = await primerCiclo;
     assert.equal(resultadoPrimero.resueltos, 1);
+});
+
+test('S12: start() programa runOnce en un intervalo real y stop() lo detiene', async (t) => {
+    const reclamarOriginal = require.cache[compensacionRepositoryPath].exports.reclamarPendientes;
+    let reclamos = 0;
+    require.cache[compensacionRepositoryPath].exports.reclamarPendientes = async () => { reclamos += 1; return []; };
+
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+    try {
+        compensacionWorker.start();
+
+        t.mock.timers.tick(5000);
+        await flush();
+        t.mock.timers.tick(5000);
+        await flush();
+        assert.equal(reclamos, 2, 'dos intervalos completos deberían disparar dos ticks');
+
+        compensacionWorker.stop();
+
+        t.mock.timers.tick(5000);
+        t.mock.timers.tick(5000);
+        await flush();
+        assert.equal(reclamos, 2, 'stop() debe impedir que se programen más ticks');
+    } finally {
+        compensacionWorker.stop();
+        require.cache[compensacionRepositoryPath].exports.reclamarPendientes = reclamarOriginal;
+    }
 });

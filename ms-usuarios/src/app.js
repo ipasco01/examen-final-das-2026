@@ -1,13 +1,22 @@
 // ms-usuarios/src/app.js
 const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const config = require('./config'); // <-- USAR EL NUEVO CONFIG
 const usuariosRouter = require('./api/routes/usuarios.routes');
 const errorHandler = require('./api/middlewares/errorHandler');
 const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
+
+const requestLogger = require('./api/middlewares/requestLogger.js');
 const messageProducer = require('./infrastructure/messaging/message.producer'); // <-- IMPORTAR PRODUCTOR
 const promBundle = require("express-prom-bundle");
 
 const app = express();
+
+app.use(helmet());
+app.use(cors());
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }));
 
 const metricsMiddleware = promBundle({
     includeMethod: true,
@@ -24,7 +33,7 @@ app.use(metricsMiddleware);
 
 app.use(express.json());
 app.use(correlationIdMiddleware);
-
+app.use(requestLogger);
 app.use('/usuarios', usuariosRouter);
 
 app.use(errorHandler);

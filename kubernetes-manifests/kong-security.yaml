@@ -33,7 +33,11 @@ metadata:
     konghq.com/credential-type: jwt
 type: Opaque
 stringData:
-  # La 'key' que coincide con el 'sub' del token de Ana Torres.
+  # Limitación conocida (alcance académico/demo, ver docs/api-security-controls.md): esta 'key' solo
+  # coincide con el 'sub' del token de Ana Torres (e12345). Un JWT válido de ms-auth para cualquier
+  # otro usuario (ej. Elena Solano, t09876) sería rechazado por Kong al no tener credencial propia.
+  # Una solución real necesitaría aprovisionar esta credencial dinámicamente por usuario vía la Kong
+  # Admin API, en vez de un Secret estático con un solo sub hardcodeado.
   key: "e12345"
   # Placeholder académico: reemplazar por el mismo valor de app-jwt-secret/JWT_SECRET antes de aplicar.
   secret: "CHANGE_ME_WITH_APP_JWT_SECRET"

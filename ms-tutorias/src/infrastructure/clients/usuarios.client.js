@@ -3,6 +3,13 @@ const axios = require('axios');
 const CircuitBreaker = require('opossum'); // 1. Importar Opossum
 const { usuariosServiceUrl } = require('../../config');
 const { publishTrackingEvent } = require('../messaging/message.producer'); // Para reportar al dashboard
+const { conReintentos } = require('./retry.util');
+
+// Reintentos con backoff exponencial + jitter ante caídas puntuales de ms-usuarios (contenedor
+// reiniciando, blip de red) -- ver retry.util.js. Configurable por si en el demo se quiere mostrar
+// más/menos intentos sin tocar código.
+const RETRY_MAX_INTENTOS = Number(process.env.RETRY_USUARIOS_MAX_INTENTOS || 3);
+const RETRY_BASE_DELAY_MS = Number(process.env.RETRY_USUARIOS_BASE_DELAY_MS || 150);
 
 // 2. Configuración del Breaker
 const breakerOptions = {
@@ -13,10 +20,10 @@ const breakerOptions = {
 };
 
 // Función que realiza la petición real
-const _makeRequest = async (url, correlationId) => {
+const _makeRequest = async (url, correlationId, authHeader) => {
     try {
         const response = await axios.get(url, {
-            headers: { 'X-Correlation-ID': correlationId },
+            headers: { 'X-Correlation-ID': correlationId, Authorization: authHeader },
             timeout: 1500 // Timeout a nivel de red también
         });
         return response.data;
@@ -47,12 +54,24 @@ const reportOpenCircuit = async (correlationId) => {
 
 const isOpenCircuitError = (error) => breaker.opened || error.code === 'EOPENBREAKER';
 
-const getUsuario = async (tipo, id, correlationId) => {
+const getUsuario = async (tipo, id, correlationId, authHeader) => {
     const url = `${usuariosServiceUrl}/${tipo}/${id}`;
 
     try {
-        // 4. Ejecutar a través del Breaker
-        const data = await breaker.fire(url, correlationId);
+        // 4. Ejecutar a través del Breaker, con reintentos (backoff exponencial + jitter) si el
+        // fallo es de infraestructura (timeout/red) -- nunca si ya hay respuesta HTTP o el
+        // circuito está abierto (ver retry.util.js).
+        const data = await conReintentos(
+            () => breaker.fire(url, correlationId, authHeader),
+            {
+                maxIntentos: RETRY_MAX_INTENTOS,
+                baseDelayMs: RETRY_BASE_DELAY_MS,
+                isOpenCircuitError,
+                onIntentoFallido: (intento, error) => console.error(
+                    `[Retry] ms-usuarios (${tipo}/${id}) - CID: ${correlationId} - intento ${intento}/${RETRY_MAX_INTENTOS} falló: ${error.message}`
+                )
+            }
+        );
         return data;
     } catch (error) {
         // Si el breaker está abierto, fallamos rápido con un error 503

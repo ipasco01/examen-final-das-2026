@@ -11,6 +11,7 @@ const compensacionFallidaTotal = new client.Counter({
     help: 'Compensaciones de agenda (cancelarBloqueo) que agotaron sus reintentos',
     // 'sincrona': el loop de reintentos dentro del propio request (tutoria.service.js) se agotó.
     // 'worker': el worker en segundo plano (compensacion.worker.js) también agotó sus reintentos.
+    // 'cancelacion': el loop de reintentos al liberar el horario en cancelarTutoria se agotó.
     labelNames: ['etapa']
 });
 

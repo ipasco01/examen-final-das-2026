@@ -1,9 +1,13 @@
 // ms-notificaciones/src/app.js
 const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const config = require('./config');
 const notificacionesRouter = require('./api/routes/notificaciones.routes');
 const errorHandler = require('./api/middlewares/errorHandler'); // Reutilizamos el mismo middleware
 const correlationIdMiddleware = require('./api/middlewares/correlationId.middleware.js');
+const requestLogger = require('./api/middlewares/requestLogger.js');
 const amqp = require('amqplib');
 const notificacionService = require('./domain/services/notificacion.service'); //  Importar el servicio de notificaciones
 const messageProducer = require('./infrastructure/messaging/message.producer'); // <-- IMPORTAR PRODUCTOR
@@ -12,6 +16,10 @@ const promBundle = require("express-prom-bundle");
 const RABBITMQ_RETRY_DELAY_MS = 5000;
 
 const app = express();
+
+app.use(helmet());
+app.use(cors());
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }));
 
 const metricsMiddleware = promBundle({
     includeMethod: true,
@@ -28,6 +36,7 @@ app.use(metricsMiddleware);
 
 app.use(express.json());
 app.use(correlationIdMiddleware); // Middleware para manejar el Correlation ID
+app.use(requestLogger);
 app.use('/notificaciones', notificacionesRouter);
 
 app.use(errorHandler);

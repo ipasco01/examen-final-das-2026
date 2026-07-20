@@ -12,7 +12,7 @@ const login = async (username, password) => {
     }
 
     // 2. Comparar la contraseña proporcionada con el hash almacenado
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    const isPasswordValid = await bcrypt.compare(password, user.passwordhash);
     if (!isPasswordValid) {
         throw Object.assign(new Error('Credenciales inválidas'), { statusCode: 401 });
     }

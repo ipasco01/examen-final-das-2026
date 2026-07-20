@@ -22,7 +22,7 @@ const createRequest = ({ idempotencyKey, headerValue }) => ({
     body: {
         idEstudiante: 'student-from-body',
         idTutor: 'tutor-1',
-        fechaSolicitada: '2026-06-24T10:00:00.000Z',
+        fechaSolicitada: '2030-06-24T10:00:00.000Z',
         duracionMinutos: 60,
         materia: 'Arquitectura de Software'
     },
@@ -322,6 +322,7 @@ test('D5: reintentar con una key ya CONFIRMADA corta antes de tocar usuarios, ag
         idTutoria: 'tutoria-previa',
         idEstudiante: 'student-from-token',
         idTutor: 'tutor-1',
+        tutorNombre: null,
         fecha: '2026-06-24T10:00:00.000Z',
         materia: 'Arquitectura de Software',
         estado: 'CONFIRMADA'
@@ -358,6 +359,7 @@ test('D5: reintentar con una key ya FALLIDA responde 409 con el motivo, sin volv
         idTutoria: 'tutoria-fallida-previa',
         idEstudiante: 'student-from-token',
         idTutor: 'tutor-1',
+        tutorNombre: null,
         fecha: '2026-06-24T10:00:00.000Z',
         materia: 'Arquitectura de Software',
         estado: 'FALLIDA',

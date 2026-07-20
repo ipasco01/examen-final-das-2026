@@ -125,9 +125,18 @@ La evidencia académica de PC03 se consolida en [`docs/pc03.md`](./pc03.md). Los
 - **Resuelto:** la notificación de tutoría confirmada ya no depende de que el canal RabbitMQ esté disponible en el instante exacto de la confirmación; el patrón outbox (`tutorias_notificaciones_outbox` + `outbox.publisher.js`) persiste la intención de notificar de forma atómica con el cambio de estado y reintenta la publicación en segundo plano. Sigue sin usarse publisher confirms de RabbitMQ propiamente dichos (la garantía viene de la tabla outbox, no del broker).
 - **Resuelto:** si falla la compensación de agenda tras agotar los reintentos síncronos, el detalle se registra en la tabla `compensaciones_pendientes` (misma transacción que el `UPDATE` a `FALLIDA`) y un worker en segundo plano (`compensacion.worker.js`) reintenta activamente hasta `COMPENSACION_PENDIENTE_MAX_INTENTOS` — ya no depende de una cola sin consumidor. Una métrica (`compensacion_fallida_total`) y una regla de alerta en Prometheus dan visibilidad si ni el worker logra resolverlo.
 - **Resuelto:** las transiciones de estado de la tutoría (`PENDIENTE -> CONFIRMADA`, `PENDIENTE -> FALLIDA`) ya no dependen solo de la disciplina del llamador; `tutoria.repository.js` las valida de forma atómica contra el estado actual antes de aplicar el `UPDATE` (ver `ms-tutorias/src/domain/models/tutoria-estado.js`).
-- **Riesgo:** la consistencia concurrente depende de validaciones y persistencia de agenda; debe demostrarse con evidencia operativa y, si aplica, pruebas específicas.
+- **Riesgo (parcial):** la consistencia concurrente depende de validaciones y persistencia de agenda. Ya existe
+  un test (`ms-tutorias/test/tutoria-concurrencia-agenda.test.js`) que dispara dos Sagas realmente concurrentes
+  para el mismo tutor/horario y confirma que una gana y la otra queda `FALLIDA` sin bloqueo huérfano — sigue
+  faltando evidencia operativa (no solo de test) contra un entorno real con Postgres/RabbitMQ levantados.
 - **Pendiente:** documentar un runbook de conciliación para bloqueos huérfanos, tutorías fallidas y mensajes en DLQ.
 - **Pendiente:** formalizar contratos de eventos con AsyncAPI o JSON Schema mínimo.
+- **Brecha de producto (S11):** el estado `CANCELADA` existe en el `CHECK` de la tabla `tutorias` y en el enum de
+  `tutoria-estado.js`, pero no tiene ningún origen válido declarado (`TRANSICIONES_VALIDAS`) ni ningún caller en
+  todo el repositorio. Es una decisión deliberada de alcance, no un descuido de código — pero, en términos de
+  producto, hoy **no existe ninguna forma de cancelar una tutoría ya `CONFIRMADA`**, ni para el estudiante, ni
+  para el tutor, ni por un camino administrativo. Se deja constancia explícita aquí para que quien decida el
+  alcance del proyecto lo sepa, en vez de que quede solo como un comentario de código.
 
 ## Próximo paso recomendado
 
