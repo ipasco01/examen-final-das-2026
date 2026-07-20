@@ -511,6 +511,12 @@ services:
     ports:
       - "4317:4317"
       - "4318:4318"
+      # Equipo 5 (20/07): puerto de la extension health_check, recien activada en
+      # otel-collector-config.yaml. NO habilita un healthcheck de compose --el comando correria
+      # dentro del contenedor y la imagen no tiene cliente HTTP-- pero permite verificarlo a mano
+      # desde el host:  curl http://localhost:13133
+      - "13133:13133"
+
     depends_on:
       tempo:
         condition: service_healthy
